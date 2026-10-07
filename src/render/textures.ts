@@ -2,7 +2,8 @@
 import * as THREE from 'three';
 import type { LabelIcon, ProductDef } from '../data/products';
 
-export const DISPLAY_FONT = '"DynaPuff", "Trebuchet MS", system-ui, sans-serif';
+export const DISPLAY_FONT = '"Baloo 2", "Trebuchet MS", system-ui, sans-serif';
+export const INK = '#1b1730';
 export const BODY_FONT = '"Nunito", "Trebuchet MS", system-ui, sans-serif';
 
 function canvas(w: number, h: number): [HTMLCanvasElement, CanvasRenderingContext2D] {
@@ -303,7 +304,7 @@ function drawLabelDesign(ctx: CanvasRenderingContext2D, p: ProductDef, W: number
     ctx.fillStyle = textOnAc;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    fitFont(ctx, p.brand, DISPLAY_FONT, '700', W * 0.8, Math.round(bh * 0.72));
+    fitFont(ctx, p.brand, DISPLAY_FONT, '800', W * 0.8, Math.round(bh * 0.72));
     ctx.fillText(p.brand, W / 2, H * 0.05 + bh / 2 + 1);
   }
   const iconY = H * 0.47;
@@ -321,17 +322,17 @@ function drawLabelDesign(ctx: CanvasRenderingContext2D, p: ProductDef, W: number
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   if (narrow) {
-    fitFont(ctx, label, DISPLAY_FONT, '700', W * 0.9, Math.round(H * 0.13));
+    fitFont(ctx, label, DISPLAY_FONT, '800', W * 0.9, Math.round(H * 0.13));
     ctx.fillText(label, W / 2, H * 0.74);
   } else {
-    ctx.font = `700 ${Math.round(H * 0.17)}px ${DISPLAY_FONT}`;
+    ctx.font = `800 ${Math.round(H * 0.17)}px ${DISPLAY_FONT}`;
     const words = label.split(' ');
     const lines =
       words.length > 1 && ctx.measureText(label).width > W * 0.5
         ? [words.slice(0, Math.ceil(words.length / 2)).join(' '), words.slice(Math.ceil(words.length / 2)).join(' ')]
         : [label];
-    const size = Math.min(...lines.map((l) => fitFont(ctx, l, DISPLAY_FONT, '700', W * 0.52, Math.round(H * 0.17))));
-    ctx.font = `700 ${size}px ${DISPLAY_FONT}`;
+    const size = Math.min(...lines.map((l) => fitFont(ctx, l, DISPLAY_FONT, '800', W * 0.52, Math.round(H * 0.17))));
+    ctx.font = `800 ${size}px ${DISPLAY_FONT}`;
     lines.forEach((l, i) => ctx.fillText(l, W * 0.69, iconY + (i - (lines.length - 1) / 2) * size * 1.05));
   }
   if (p.sub) {
@@ -351,37 +352,72 @@ function drawLabelDesign(ctx: CanvasRenderingContext2D, p: ProductDef, W: number
   ctx.fillRect(0, 0, W, H);
 }
 
-/** Hanging aisle sign: number disc + section name. */
-export function aisleSignTexture(name: string, color: string, aisle: number): THREE.CanvasTexture {
-  const [c, ctx] = canvas(1024, 256);
-  ctx.fillStyle = color;
-  roundRect(ctx, 6, 6, 1012, 244, 60);
+/** Cartoon sticker sign: ink outline, 3D lip, aisle badge, icon and outlined text. */
+export function aisleSignTexture(name: string, color: string, aisle: number, icon: LabelIcon = 'star'): THREE.CanvasTexture {
+  const W = 1024;
+  const H = 288;
+  const [c, ctx] = canvas(W, H);
+  const lip = 26;
+  // body with a darker lip underneath (reads as a chunky 3D slab)
+  ctx.fillStyle = INK;
+  roundRect(ctx, 6, 6, W - 12, H - 12, 70);
   ctx.fill();
-  ctx.lineWidth = 12;
-  ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-  roundRect(ctx, 22, 22, 980, 212, 48);
-  ctx.stroke();
-  let textX = 512;
+  ctx.fillStyle = shade(color, -0.16);
+  roundRect(ctx, 18, 18, W - 36, H - 36, 60);
+  ctx.fill();
+  ctx.fillStyle = color;
+  roundRect(ctx, 18, 18, W - 36, H - 36 - lip, 60);
+  ctx.fill();
+  // glossy band
+  ctx.fillStyle = 'rgba(255,255,255,0.22)';
+  roundRect(ctx, 46, 30, W - 92, 46, 23);
+  ctx.fill();
+  let x = 70;
   if (aisle > 0) {
-    ctx.fillStyle = '#fff';
+    const cx = 140;
+    const cy = (H - lip) / 2 + 4;
+    ctx.fillStyle = INK;
     ctx.beginPath();
-    ctx.arc(130, 128, 82, 0, Math.PI * 2);
+    ctx.arc(cx, cy, 84, 0, Math.PI * 2);
     ctx.fill();
-    ctx.fillStyle = color;
-    ctx.font = `700 120px ${DISPLAY_FONT}`;
+    ctx.fillStyle = '#FFD23F';
+    ctx.beginPath();
+    ctx.arc(cx, cy, 72, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = INK;
+    ctx.font = `800 118px ${DISPLAY_FONT}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(String(aisle), 130, 136);
-    textX = 590;
+    ctx.fillText(String(aisle), cx, cy + 10);
+    x = 250;
+  } else {
+    const cx = 128;
+    const cy = (H - lip) / 2 + 4;
+    ctx.fillStyle = '#FFF4DC';
+    ctx.beginPath();
+    ctx.arc(cx, cy, 74, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.lineWidth = 10;
+    ctx.strokeStyle = INK;
+    ctx.stroke();
+    drawIcon(ctx, icon, cx, cy, 50, shade(color, -0.1), '#FFF4DC');
+    x = 230;
   }
-  const text = name.toLocaleUpperCase('tr-TR');
-  ctx.fillStyle = '#fff';
-  ctx.textAlign = 'center';
+  const text = name.toUpperCase();
+  const maxW = W - x - 60;
+  const size = fitFont(ctx, text, DISPLAY_FONT, '800', maxW, 124, 40);
+  ctx.font = `800 ${size}px ${DISPLAY_FONT}`;
+  ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  fitFont(ctx, text, DISPLAY_FONT, '700', aisle > 0 ? 760 : 940, 112);
-  ctx.shadowColor = 'rgba(0,0,0,0.25)';
-  ctx.shadowOffsetY = 6;
-  ctx.fillText(text, textX, 136);
+  const ty = (H - lip) / 2 + size * 0.1;
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = Math.max(10, size * 0.16);
+  ctx.strokeStyle = INK;
+  ctx.fillStyle = INK;
+  ctx.fillText(text, x + 4, ty + 9);
+  ctx.strokeText(text, x, ty);
+  ctx.fillStyle = '#FFF4DC';
+  ctx.fillText(text, x, ty);
   return toTexture(c);
 }
 
@@ -414,10 +450,10 @@ export function priceTagAtlas(entries: { key: string; name: string; price: strin
     ctx.fillText(e.name, 18, 62);
     ctx.font = `600 22px ${BODY_FONT}`;
     ctx.fillStyle = '#6b7280';
-    ctx.fillText(e.promo ? 'KAMPANYA' : 'Birim fiyat', 18, 102);
+    ctx.fillText(e.promo ? 'SALE' : 'Unit price', 18, 102);
     ctx.textAlign = 'right';
     ctx.fillStyle = e.promo ? '#dc2626' : '#111827';
-    fitFont(ctx, e.price, DISPLAY_FONT, '700', 170, 50, 20);
+    fitFont(ctx, e.price, DISPLAY_FONT, '800', 170, 50, 20);
     ctx.fillText(e.price, tw - 16, 72);
     ctx.restore();
     uv.set(e.key, [x / c.width, 1 - (y + th) / c.height, (x + tw) / c.width, 1 - y / c.height]);
@@ -433,7 +469,7 @@ export function floorTexture(): THREE.CanvasTexture {
   for (let i = 0; i < tiles; i++) {
     for (let j = 0; j < tiles; j++) {
       const dark = (i + j) % 2 === 1;
-      const base = dark ? [206, 196, 180] : [236, 231, 220];
+      const base = dark ? [246, 214, 168] : [255, 243, 222];
       const jit = ((i * 7 + j * 13) % 5) - 2;
       const g = ctx.createLinearGradient(i * s, j * s, (i + 1) * s, (j + 1) * s);
       g.addColorStop(0, `rgb(${base[0] + jit + 3},${base[1] + jit + 3},${base[2] + jit + 3})`);
@@ -442,8 +478,8 @@ export function floorTexture(): THREE.CanvasTexture {
       ctx.fillRect(i * s, j * s, s, s);
     }
   }
-  ctx.strokeStyle = 'rgba(120,110,95,0.35)';
-  ctx.lineWidth = 4;
+  ctx.strokeStyle = 'rgba(120,90,60,0.28)';
+  ctx.lineWidth = 5;
   for (let i = 0; i <= tiles; i++) {
     ctx.beginPath();
     ctx.moveTo(i * s, 0);
@@ -463,7 +499,7 @@ export function floorTexture(): THREE.CanvasTexture {
 
 export function ceilingTexture(): THREE.CanvasTexture {
   const [c, ctx] = canvas(256, 256);
-  ctx.fillStyle = '#f4f2ec';
+  ctx.fillStyle = '#fffaf0';
   ctx.fillRect(0, 0, 256, 256);
   for (let k = 0; k < 2500; k++) {
     ctx.fillStyle = `rgba(0,0,0,${Math.random() * 0.06})`;
@@ -477,7 +513,7 @@ export function ceilingTexture(): THREE.CanvasTexture {
 
 export function wallTexture(): THREE.CanvasTexture {
   const [c, ctx] = canvas(512, 512);
-  ctx.fillStyle = '#fbf6ec';
+  ctx.fillStyle = '#fff6e4';
   ctx.fillRect(0, 0, 512, 512);
   for (let k = 0; k < 3000; k++) {
     ctx.fillStyle = `rgba(150,120,80,${Math.random() * 0.04})`;
@@ -541,7 +577,7 @@ export function posterTexture(title: string, sub: string, bg: string, fg = '#fff
   ctx.fillStyle = fg;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  fitFont(ctx, title, DISPLAY_FONT, '700', 460, 120);
+  fitFont(ctx, title, DISPLAY_FONT, '800', 460, 120);
   ctx.fillText(title, 256, 540);
   fitFont(ctx, sub, BODY_FONT, '800', 460, 46);
   ctx.fillText(sub, 256, 640);
@@ -557,7 +593,7 @@ export function bannerTexture(text: string, sub: string, bg: string, fg = '#ffff
   ctx.fillStyle = fg;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  fitFont(ctx, text, DISPLAY_FONT, '700', w * 0.9, Math.round(h * (sub ? 0.5 : 0.62)));
+  fitFont(ctx, text, DISPLAY_FONT, '800', w * 0.9, Math.round(h * (sub ? 0.5 : 0.62)));
   ctx.fillText(text, w / 2, sub ? h * 0.4 : h * 0.52);
   if (sub) {
     fitFont(ctx, sub, BODY_FONT, '800', w * 0.85, Math.round(h * 0.2));
@@ -569,24 +605,26 @@ export function bannerTexture(text: string, sub: string, bg: string, fg = '#ffff
 /** Speech bubble for sprites. */
 export function bubbleTexture(text: string, bg = '#ffffff', fg = '#1f2937'): THREE.CanvasTexture {
   const [c, ctx] = canvas(512, 192);
-  ctx.font = `700 64px ${DISPLAY_FONT}`;
+  ctx.font = `800 64px ${DISPLAY_FONT}`;
   const tw = Math.min(480, ctx.measureText(text).width + 70);
   const x = 256 - tw / 2;
   ctx.fillStyle = bg;
-  ctx.shadowColor = 'rgba(0,0,0,0.25)';
-  ctx.shadowBlur = 10;
+  ctx.lineWidth = 8;
+  ctx.strokeStyle = INK;
+  ctx.beginPath();
+  ctx.moveTo(236, 128);
+  ctx.lineTo(256, 172);
+  ctx.lineTo(282, 128);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
   roundRect(ctx, x, 14, tw, 120, 50);
   ctx.fill();
-  ctx.beginPath();
-  ctx.moveTo(236, 130);
-  ctx.lineTo(256, 172);
-  ctx.lineTo(282, 130);
-  ctx.fill();
-  ctx.shadowBlur = 0;
+  ctx.stroke();
   ctx.fillStyle = fg;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  fitFont(ctx, text, DISPLAY_FONT, '700', tw - 50, 64);
+  fitFont(ctx, text, DISPLAY_FONT, '800', tw - 50, 64);
   ctx.fillText(text, 256, 78);
   return toTexture(c);
 }

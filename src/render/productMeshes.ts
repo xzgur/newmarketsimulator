@@ -10,6 +10,7 @@ import type { ProductDef } from '../data/products';
 import { productLabel } from './textures';
 import { normalizeGeometry } from './batch';
 import { propParts } from './assets';
+import { toToon } from './toon';
 
 export interface ProductAsset {
   geometry: THREE.BufferGeometry;
@@ -263,7 +264,7 @@ export function getProductAsset(p: ProductDef): ProductAsset {
   if (!geometry) throw new Error(`Failed to merge geometry for ${p.id}`);
   geometry.computeBoundingBox();
   geometry.computeBoundingSphere();
-  const asset: ProductAsset = { geometry, materials, height: geometry.boundingBox!.max.y };
+  const asset: ProductAsset = { geometry, materials: materials.map(toToon), height: geometry.boundingBox!.max.y };
   assetCache.set(p.id, asset);
   return asset;
 }

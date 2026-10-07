@@ -11,7 +11,8 @@ import { assetUrl } from './assets';
 import type { OutsideView } from './outside';
 import type { Post } from './post';
 
-export type MoodId = 'day' | 'sunset' | 'night';
+import type { MoodId } from './moodIds';
+export type { MoodId };
 
 export interface MoodDef {
   id: MoodId;
@@ -29,7 +30,7 @@ export interface MoodDef {
   streetLamps: number;
   envIntensity: number;
   exposure: number;
-  grade: { vignette: number; saturation: number; contrast: number; tint: string; grain: number; bloom: number; bloomThreshold: number };
+  grade: { vignette: number; saturation: number; contrast: number; tint: string; bloom: number; bloomThreshold: number };
   fog: string;
   /** Brightness of the street outside. */
   daylight: number;
@@ -42,17 +43,17 @@ export const MOODS: Record<MoodId, MoodDef> = {
     sub: 'Güneşli, ferah, cıvıl cıvıl',
     hdr: 'spruit_sunrise_1k.hdr',
     skyIntensity: 1.0,
-    hemi: ['#fff6e6', '#b9a284', 0.85],
-    ambient: 0.12,
-    sun: { color: '#fff0d2', intensity: 3.1, pos: [10, 22, 26] },
+    hemi: ['#fff6ea', '#c9b8ff', 1.25],
+    ambient: 0.25,
+    sun: { color: '#fff3dc', intensity: 2.4, pos: [12, 26, 18] },
     fixtures: 2.6,
     fixtureColor: '#fff4e0',
     pools: 0.07,
     points: { color: '#fff1dc', intensity: 0 },
     streetLamps: 0,
     envIntensity: 0.45,
-    exposure: 0.95,
-    grade: { vignette: 0.3, saturation: 1.15, contrast: 1.08, tint: '#ffffff', grain: 0.02, bloom: 0.28, bloomThreshold: 2.3 },
+    exposure: 1.0,
+    grade: { vignette: 0.22, saturation: 1.12, contrast: 1.04, tint: '#ffffff', bloom: 0.28, bloomThreshold: 2.3 },
     fog: '#cfe3f2',
     daylight: 1,
   },
@@ -72,7 +73,7 @@ export const MOODS: Record<MoodId, MoodDef> = {
     streetLamps: 1.5,
     envIntensity: 0.45,
     exposure: 1.0,
-    grade: { vignette: 0.38, saturation: 1.18, contrast: 1.06, tint: '#fff1e2', grain: 0.025, bloom: 0.4, bloomThreshold: 2.0 },
+    grade: { vignette: 0.38, saturation: 1.18, contrast: 1.06, tint: '#fff1e2', bloom: 0.4, bloomThreshold: 2.0 },
     fog: '#e8b996',
     daylight: 0.8,
   },
@@ -92,7 +93,7 @@ export const MOODS: Record<MoodId, MoodDef> = {
     streetLamps: 4,
     envIntensity: 0.3,
     exposure: 1.1,
-    grade: { vignette: 0.5, saturation: 1.2, contrast: 1.1, tint: '#eef3ff', grain: 0.035, bloom: 0.45, bloomThreshold: 2.2 },
+    grade: { vignette: 0.5, saturation: 1.2, contrast: 1.1, tint: '#eef3ff', bloom: 0.45, bloomThreshold: 2.2 },
     fog: '#0b1020',
     daylight: 0.22,
   },

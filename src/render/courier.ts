@@ -7,6 +7,8 @@ import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeom
 import { createCharacter, type CharacterInstance } from './assets';
 import { attachToBone } from './people';
 import { bannerTexture, bubbleTexture } from './textures';
+import { toonify } from './toon';
+import { t } from '../i18n';
 
 const std = (color: string, rough = 0.5, metal = 0) => new THREE.MeshStandardMaterial({ color, roughness: rough, metalness: metal });
 
@@ -22,8 +24,8 @@ function rbox(w: number, h: number, d: number, r: number, m: THREE.Material, x: 
 
 function deliveryBox(): THREE.Group {
   const g = new THREE.Group();
-  rbox(0.5, 0.46, 0.46, 0.05, std('#ef4444', 0.5), 0, 0, 0, g);
-  const logo = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.2), new THREE.MeshBasicMaterial({ map: bannerTexture('Kapında!', '', '#ffffff', '#ef4444', 512, 240), toneMapped: false }));
+  rbox(0.5, 0.46, 0.46, 0.05, std('#FF5B4F', 0.5), 0, 0, 0, g);
+  const logo = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.2), new THREE.MeshBasicMaterial({ map: bannerTexture('Order Dash', '', '#FFD23F', '#1b1730', 512, 240), toneMapped: false }));
   logo.position.set(0, 0.05, 0.232);
   g.add(logo);
   const logo2 = logo.clone();
@@ -107,7 +109,8 @@ export class CourierView {
     this.hands.position.set(0, 1.0, 0.45);
     this.group.add(this.scooter, this.rider);
     this.group.visible = false;
-    this.bubble = new THREE.Sprite(new THREE.SpriteMaterial({ transparent: true }));
+    toonify(this.group);
+    this.bubble = new THREE.Sprite(new THREE.SpriteMaterial({ transparent: true, depthWrite: false }));
     this.bubble.scale.set(1.3, 0.49, 1);
     this.bubble.position.y = 2.3;
     this.bubble.visible = false;
@@ -131,7 +134,7 @@ export class CourierView {
   say(text: string, dur = 3) {
     const m = this.bubble.material as THREE.SpriteMaterial;
     m.map?.dispose();
-    m.map = bubbleTexture(text, '#ef4444', '#ffffff');
+    m.map = bubbleTexture(text, '#FFD23F', '#1b1730');
     m.needsUpdate = true;
     this.bubble.visible = true;
     this.bubbleT = dur;
@@ -161,7 +164,7 @@ export class CourierView {
     this.state = 'waiting';
     this.ch.play('Idle');
     this.doorCallback?.(false);
-    this.say('Sipariş hazır mı? 🛵');
+    this.say(t('courier.ready'));
     this.onArrive?.();
   }
 
@@ -190,7 +193,7 @@ export class CourierView {
     const root = this.group.parent!;
     for (const b of bags) root.add(b);
     this.ch.play('PickUp', 0.2, true);
-    this.say('Teşekkürler! 🙌', 2.5);
+    this.say(t('courier.thanks'), 2.5);
     const handsW = new THREE.Vector3();
     this.receiveAnim = (t: number) => {
       this.hands.getWorldPosition(handsW);

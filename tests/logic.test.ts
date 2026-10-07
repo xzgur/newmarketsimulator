@@ -273,3 +273,47 @@ describe('GameFlow', () => {
     expect(formatTime(-3)).toBe('0:00');
   });
 });
+
+import { LEVELS } from '../src/data/order';
+import { missingKeys, PRODUCT_NAMES, SECTION_NAMES } from '../src/i18n';
+
+/** Backtracking packer: can every item of the order be bagged under its rules? */
+function solvable(order: OrderDef): boolean {
+  const items = order.lines.flatMap((l) => Array.from({ length: l.qty }, () => getProduct(l.productId)));
+  const bags: ReturnType<typeof getProduct>[][] = Array.from({ length: order.bagCount }, () => []);
+  const go = (i: number): boolean => {
+    if (i === items.length) return true;
+    for (const bag of bags) {
+      if (bag.length >= order.bagCapacity || bagConflict(items[i], bag, order.rules)) continue;
+      bag.push(items[i]);
+      if (go(i + 1)) return true;
+      bag.pop();
+    }
+    return false;
+  };
+  return go(0);
+}
+
+describe('campaign', () => {
+  it.each(LEVELS.map((l) => [l.num, l] as const))('shift %i can be packed', (_n, level) => {
+    expect(solvable(level.order)).toBe(true);
+    for (const line of level.order.lines) expect(line.productId in PRODUCT_BY_ID).toBe(true);
+  });
+
+  it('shifts are numbered 1..n and get longer', () => {
+    LEVELS.forEach((l, i) => expect(l.num).toBe(i + 1));
+    const counts = LEVELS.map((l) => l.order.lines.reduce((a, b) => a + b.qty, 0));
+    expect(counts[counts.length - 1]).toBeGreaterThan(counts[0]);
+  });
+});
+
+describe('i18n', () => {
+  it('every language has every key', () => {
+    expect(missingKeys()).toEqual([]);
+  });
+
+  it('every product and section is translated', () => {
+    for (const id of Object.keys(PRODUCT_BY_ID)) expect(PRODUCT_NAMES[id]?.every(Boolean)).toBe(true);
+    expect(Object.values(SECTION_NAMES).length).toBeGreaterThan(5);
+  });
+});

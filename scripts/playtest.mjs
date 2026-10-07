@@ -4,7 +4,8 @@
  *   npm run dev                 # in another terminal
  *   npm run playtest [-- url]   # default http://localhost:5173/?q=low
  *
- * Plays the whole order through the real input layer: keyboard walking,
+ * Plays shift 1 from the main menu to delivery, then shift 6 (three bags,
+ * bag rules) and a time-out. Everything goes through the real input layer: keyboard walking,
  * mouse drag-look, left click to pick / bag, right click to put back, F to
  * close the order, E to hand it to the courier. The debug hook
  * (window.__game) is only used to walk up to shelves / aim at items and to
@@ -57,8 +58,18 @@ try {
   await advance(0.05);
   await shot('title');
 
-  console.log('Shift start');
-  await page.click('text=Vardiyaya Başla');
+  console.log('Menus');
+  await page.click('[data-act=go][data-to=settings]');
+  await page.waitForTimeout(300);
+  await shot('settings');
+  await page.click('[data-act=back]');
+  await page.click('[data-act=go][data-to=levels]');
+  await page.waitForTimeout(300);
+  await shot('shifts');
+  await page.click('[data-act=back]');
+
+  console.log('Shift 1 start');
+  await page.click('[data-act=play]');
   await advance(0.4);
   assert((await g(() => window.__game.phase)) === 'incoming', 'phone rings with an incoming order');
   await shot('incoming-order');
@@ -125,32 +136,11 @@ try {
   await advance(0.4);
   assert((await g(() => window.__game.session)).tray.length === 0, 'right click puts the item back');
 
-  console.log('Picking + bagging');
-  const plan = [
-    ['milk_full', 0],
-    ['eggs_10', 0],
-    ['cheese_white', 0],
-    ['bread_white', 0],
-    ['tomato', 1],
-    ['banana', 1],
-    ['water_5l', 1],
-    ['chips_potato', 1],
-    ['chips_potato', 1],
-    ['dish_soap', 2],
-  ];
-  for (const [pid, bi] of plan) {
+  console.log('Picking + bagging (shift 1)');
+  for (const pid of ['milk_full', 'bread_white', 'banana']) {
     await pick(pid);
-    if (pid === 'water_5l') {
-      // bag 1 holds eggs: the rule must refuse 5L water there (no penalty)
-      const tw = await g(() => window.__game.timeLeft);
-      await page.keyboard.press('1');
-      await advance(0.3);
-      assert((await g(() => window.__game.session)).tray[0] === 'water_5l', 'eggs + 5L water rule refuses bag 1');
-      assert(tw - (await g(() => window.__game.timeLeft)) < 1, 'rule refusal has no time penalty');
-    }
     if (pid === 'banana') await shot('holding-banana');
-    await bag(bi);
-    if (pid === 'bread_white') await shot('bag1-filled');
+    await bag(0);
   }
   await page.keyboard.press('Tab');
   await advance(0.1);
@@ -187,8 +177,42 @@ try {
   await shot('won');
   assert((await g(() => window.__game.score)) > 0, 'score awarded');
 
+  assert((await g(() => window.__game.progress)).stars[1] >= 1, 'shift 1 stars saved');
+  await page.click('[data-act=next]');
+  await advance(0.2);
+  assert((await g(() => window.__game.level)) === 2, 'next shift button opens shift 2');
+
+  console.log('Shift 6: three bags + rules');
+  await g(() => window.__game.play(6));
+  await advance(0.2);
+  await page.keyboard.press('Enter');
+  await advance(0.2);
+  assert((await g(() => window.__game.session)).bags.length === 3, 'shift 6 has three bags');
+  const plan = [
+    ['eggs_10', 0],
+    ['water_5l', 1],
+    ['dish_soap', 2],
+  ];
+  for (const [pid, bi] of plan) {
+    await pick(pid);
+    if (pid === 'water_5l') {
+      const tw = await g(() => window.__game.timeLeft);
+      await page.keyboard.press('1');
+      await advance(0.3);
+      assert((await g(() => window.__game.session)).tray[0] === 'water_5l', 'eggs + 5L water rule refuses bag 1');
+      assert(tw - (await g(() => window.__game.timeLeft)) < 1, 'rule refusal has no time penalty');
+    }
+    await bag(bi);
+  }
+  await shot('three-bags');
+
   console.log('Restart + time-out');
-  await page.click('text=Bir Vardiya Daha');
+  await g(() => window.__game.press('pause'));
+  await advance(0.05);
+  assert(await page.isVisible('[data-act=resume]'), 'pause menu opens');
+  await page.waitForTimeout(300);
+  await shot('pause');
+  await page.click('[data-act=restart]');
   await advance(0.2);
   const s = await g(() => ({ phase: window.__game.phase, t: window.__game.timeLeft, tray: window.__game.session.tray.length }));
   assert(s.phase === 'incoming' && s.tray === 0 && s.t === 300, 'restart resets the shift');

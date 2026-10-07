@@ -9,10 +9,9 @@ import { createCharacter, type CharacterBase, type CharacterInstance, type Outfi
 import { shoppingBasket } from './store';
 import { bubbleTexture } from './textures';
 import type { DynamicBlocker } from '../logic/player';
+import { pick } from '../i18n';
+import { toonify } from './toon';
 
-const LINES_IDLE = ['Hmm, indirim var!', 'Ekmek nerede?', 'Bu fiyat iyi!', 'Çay bitmişti...', 'Taze mi bunlar?', 'Listeyi unuttum!', 'Ooo kampanya!', 'Akşama makarna 🍝'];
-const LINES_BUMP = ['Pardon!', 'Dikkat!', 'Ayy!', 'Yavaş ol!', 'Hey!', 'Acelen mi var?'];
-const LINES_HELLO = ['Kolay gelsin!', 'Merhaba!', 'İyi çalışmalar!'];
 
 export function attachToBone(ch: CharacterInstance, boneName: string, obj: THREE.Object3D, worldScale: number) {
   const bone = ch.bone(boneName);
@@ -28,7 +27,7 @@ class Bubble {
   sprite: THREE.Sprite;
   private t = 0;
   constructor(parent: THREE.Object3D, y: number) {
-    this.sprite = new THREE.Sprite(new THREE.SpriteMaterial({ depthTest: true, transparent: true }));
+    this.sprite = new THREE.Sprite(new THREE.SpriteMaterial({ depthTest: true, depthWrite: false, transparent: true }));
     this.sprite.scale.set(1.1, 0.41, 1);
     this.sprite.position.y = y;
     this.sprite.visible = false;
@@ -129,7 +128,7 @@ export class People {
       this.npcs.push(npc);
     }
     for (const spot of layout.checkoutSpots) {
-      const ch = createCharacter('Knight', { tint: '#1f8a70', hue: 0 });
+      const ch = createCharacter('Knight', { tint: '#5B4FCF', hue: 0 });
       ch.root.position.set(spot.x, 0, spot.z);
       ch.root.rotation.y = spot.angle;
       this.group.add(ch.root);
@@ -137,6 +136,7 @@ export class People {
       ch.mixer.update(Math.random() * 3);
       this.cashiers.push({ ch, timer: 2 + Math.random() * 5 });
     }
+    toonify(this.group);
   }
 
   private rand(): number {
@@ -171,7 +171,7 @@ export class People {
       const d = Math.hypot(n.group.position.x - x, n.group.position.z - z);
       if (d < 1.15 && n.bumpCooldown <= 0 && speed > 0.6) {
         n.bumpCooldown = 4;
-        const line = LINES_BUMP[Math.floor(this.rand() * LINES_BUMP.length)];
+        const line = pick('npc.bump');
         n.bubble.say(line);
         this.onSpeak?.(line, n.group.position.x, n.group.position.z);
         n.ch.play('Hit_A', 0.1, true);
@@ -198,7 +198,7 @@ export class People {
       const p = n.group.position;
       const toPlayer = Math.hypot(player.x - p.x, player.z - p.z);
       if (n.chatCooldown <= 0 && toPlayer < 6 && toPlayer > 1.5 && !n.bubble.active) {
-        const line = !n.helloDone ? LINES_HELLO[Math.floor(this.rand() * LINES_HELLO.length)] : LINES_IDLE[Math.floor(this.rand() * LINES_IDLE.length)];
+        const line = pick(n.helloDone ? 'npc.idle' : 'npc.hello');
         n.helloDone = true;
         n.bubble.say(line);
         this.onSpeak?.(line, p.x, p.z);

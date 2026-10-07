@@ -7,6 +7,8 @@
  */
 import type { OrderDef } from '../data/order';
 import { getProduct, type ProductDef } from '../data/products';
+import { productName, t } from '../i18n';
+import type { BagRules } from '../data/order';
 
 export const WRONG_ITEM_PENALTY = 5;
 
@@ -27,22 +29,25 @@ export interface LineProgress {
   inTray: number;
 }
 
-export const RULES = [
-  'Temizlik ürünleri gıdayla aynı poşete konmaz.',
-  'Yumurta, ağır ürünlerle (5L su) aynı poşete konmaz.',
-];
+/** Rule lines shown in the app for the enabled rules. */
+export function ruleLines(rules: BagRules, capacity: number): string[] {
+  const out: string[] = [];
+  if (rules.chemical) out.push(t('rule.chem'));
+  if (rules.fragile) out.push(t('rule.fragile'));
+  out.push(t('rule.cap', { n: capacity }));
+  out.push(t('rule.penalty'));
+  return out;
+}
 
 /** Returns a reason string if `product` may not join a bag holding `existing`. */
-export function bagConflict(product: ProductDef, existing: ProductDef[]): string | null {
+export function bagConflict(product: ProductDef, existing: ProductDef[], rules: BagRules = { chemical: true, fragile: true }): string | null {
   for (const other of existing) {
     const chemFood =
-      (product.tags.includes('chemical') && other.tags.includes('food')) ||
-      (product.tags.includes('food') && other.tags.includes('chemical'));
-    if (chemFood) return `${product.name}, ${other.name} ile aynı poşete konamaz (temizlik ürünü + gıda).`;
+      (product.tags.includes('chemical') && other.tags.includes('food')) || (product.tags.includes('food') && other.tags.includes('chemical'));
+    if (rules.chemical && chemFood) return t('err.chem', { a: productName(product.id), b: productName(other.id) });
     const fragileHeavy =
-      (product.tags.includes('fragile') && other.tags.includes('heavy')) ||
-      (product.tags.includes('heavy') && other.tags.includes('fragile'));
-    if (fragileHeavy) return `${product.name}, ${other.name} ile aynı poşete konamaz (yumurta ezilir).`;
+      (product.tags.includes('fragile') && other.tags.includes('heavy')) || (product.tags.includes('heavy') && other.tags.includes('fragile'));
+    if (rules.fragile && fragileHeavy) return t('err.fragile', { a: productName(product.id), b: productName(other.id) });
   }
   return null;
 }
@@ -91,9 +96,9 @@ export class OrderSession {
   }
 
   pick(productId: string): ActionResult {
-    if (this.closed) return { ok: false, reason: 'Sipariş zaten kapatıldı.' };
+    if (this.closed) return { ok: false, reason: t('err.closed') };
     if (this.tray.length >= this.order.trayCapacity) {
-      return { ok: false, reason: 'Elin dolu! Önce elindekini bir poşete koy ya da geri bırak (sağ tık).' };
+      return { ok: false, reason: t('err.handFull') };
     }
     getProduct(productId); // validates id
     this.tray.push(productId);
@@ -102,36 +107,36 @@ export class OrderSession {
 
   /** Removes the held item (put back on the shelf). Free action. */
   discard(trayIndex: number): ActionResult {
-    if (trayIndex < 0 || trayIndex >= this.tray.length) return { ok: false, reason: 'Geçersiz ürün.' };
+    if (trayIndex < 0 || trayIndex >= this.tray.length) return { ok: false, reason: t('err.invalid') };
     this.tray.splice(trayIndex, 1);
     return { ok: true };
   }
 
   openBag(bagIndex: number): ActionResult {
     const bag = this.bags[bagIndex];
-    if (!bag) return { ok: false, reason: 'Geçersiz poşet.' };
-    if (bag.open) return { ok: false, reason: 'Poşet zaten açık.' };
+    if (!bag) return { ok: false, reason: t('err.invalid') };
+    if (bag.open) return { ok: false, reason: t('err.bagOpen') };
     bag.open = true;
     return { ok: true };
   }
 
   /** Checks whether a tray item could go into a bag without changing state. */
   canPlace(trayIndex: number, bagIndex: number): ActionResult {
-    if (this.closed) return { ok: false, reason: 'Sipariş zaten kapatıldı.' };
+    if (this.closed) return { ok: false, reason: t('err.closed') };
     const pid = this.tray[trayIndex];
     const bag = this.bags[bagIndex];
-    if (pid === undefined || !bag) return { ok: false, reason: 'Geçersiz seçim.' };
-    if (!bag.open) return { ok: false, reason: 'Önce poşeti aç.' };
+    if (pid === undefined || !bag) return { ok: false, reason: t('err.invalid') };
+    if (!bag.open) return { ok: false, reason: t('err.openFirst') };
     const product = getProduct(pid);
     const need = this.requiredQty(pid);
     if (need === 0) {
-      return { ok: false, reason: `${product.name} siparişte yok! Rafa geri bırak (sağ tık).`, penalty: WRONG_ITEM_PENALTY };
+      return { ok: false, reason: t('err.notInOrder', { name: productName(pid) }), penalty: WRONG_ITEM_PENALTY };
     }
     if (this.baggedCount(pid) >= need) {
-      return { ok: false, reason: `${product.name} için yeterli adet zaten poşette. Fazlasını geri bırak.`, penalty: WRONG_ITEM_PENALTY };
+      return { ok: false, reason: t('err.enough', { name: productName(pid) }), penalty: WRONG_ITEM_PENALTY };
     }
-    if (bag.items.length >= this.order.bagCapacity) return { ok: false, reason: 'Bu poşet dolu.' };
-    const conflict = bagConflict(product, bag.items.map(getProduct));
+    if (bag.items.length >= this.order.bagCapacity) return { ok: false, reason: t('err.bagFull') };
+    const conflict = bagConflict(product, bag.items.map(getProduct), this.order.rules);
     if (conflict) return { ok: false, reason: conflict };
     return { ok: true };
   }
@@ -149,10 +154,10 @@ export class OrderSession {
 
   /** Takes an item back out of a bag into the tray. */
   unbag(bagIndex: number, itemIndex: number): ActionResult {
-    if (this.closed) return { ok: false, reason: 'Sipariş zaten kapatıldı.' };
+    if (this.closed) return { ok: false, reason: t('err.closed') };
     const bag = this.bags[bagIndex];
-    if (!bag || itemIndex < 0 || itemIndex >= bag.items.length) return { ok: false, reason: 'Geçersiz seçim.' };
-    if (this.tray.length >= this.order.trayCapacity) return { ok: false, reason: 'Elin dolu.' };
+    if (!bag || itemIndex < 0 || itemIndex >= bag.items.length) return { ok: false, reason: t('err.invalid') };
+    if (this.tray.length >= this.order.trayCapacity) return { ok: false, reason: t('err.handFull') };
     const [pid] = bag.items.splice(itemIndex, 1);
     this.tray.push(pid);
     return { ok: true };
@@ -164,10 +169,10 @@ export class OrderSession {
 
   /** The order can be closed when everything is bagged and the tray is empty. */
   canClose(): ActionResult {
-    if (this.closed) return { ok: false, reason: 'Sipariş zaten kapatıldı.' };
+    if (this.closed) return { ok: false, reason: t('err.closed') };
     const missing = this.order.lines.filter((l) => this.baggedCount(l.productId) < l.qty);
-    if (missing.length) return { ok: false, reason: `Eksik ürün var (${missing.length} kalem).` };
-    if (this.tray.length) return { ok: false, reason: 'Elinde hâlâ bir ürün var, önce onu bırak.' };
+    if (missing.length) return { ok: false, reason: t('err.missing', { n: missing.reduce((a, l) => a + l.qty - this.baggedCount(l.productId), 0) }) };
+    if (this.tray.length) return { ok: false, reason: t('err.holding') };
     return { ok: true };
   }
 

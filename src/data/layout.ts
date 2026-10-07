@@ -201,7 +201,7 @@ export function buildLayout(): StoreLayout {
     const x = fridgeX0 + COL / 2 + i * COL;
     add({ productId: pid, section: 'dairy', kind: 'fridge', x, z: -14.52, angle: 0, width: COL, depth: 0.95, stand: { x, z: -12.9, via: [], node: back[nearestLane(x)] } });
   });
-  signs.push({ section: 'dairy', x: 0, y: 3.2, z: -14.96, angle: 0, width: 5.5, hanging: false });
+  signs.push({ section: 'dairy', x: 0, y: 2.95, z: -14.96, angle: 0, width: 4.6, hanging: false });
 
   // ---------------------------------------------------------- bakery (left wall) & drinks (right wall)
   const wallZ0 = -10.2;

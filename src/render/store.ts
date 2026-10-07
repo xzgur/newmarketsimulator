@@ -2,10 +2,25 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import type { Display, StoreLayout } from '../data/layout';
-import { getProduct, SECTIONS, formatPrice, type ProductDef } from '../data/products';
+import { getProduct, SECTIONS, formatPrice, type LabelIcon, type ProductDef, type SectionId } from '../data/products';
+import { productName, sectionName } from '../i18n';
 import { getProductAsset } from './productMeshes';
 import { prop } from './assets';
-import { aisleSignTexture, bannerTexture, ceilingTexture, floorTexture, glowTexture, posterTexture, priceTagAtlas, wainscotTexture, wallTexture } from './textures';
+import { aisleSignTexture, bannerTexture, ceilingTexture, floorTexture, glowTexture, INK, posterTexture, priceTagAtlas, wainscotTexture, wallTexture } from './textures';
+import { toonify } from './toon';
+
+export const SECTION_ICON: Record<SectionId, LabelIcon> = {
+  dairy: 'cow',
+  bakery: 'wheat',
+  drinks: 'drop',
+  produce: 'leaf',
+  snacks: 'star',
+  breakfast: 'fruit',
+  pantry: 'bean',
+  coffee: 'cup',
+  cleaning: 'bubbles',
+  care: 'heart',
+};
 import { bakeStatic } from './batch';
 
 interface Slot {
@@ -67,8 +82,10 @@ export class StoreView {
     this.buildFurniture();
     this.buildDecor();
     this.buildSigns();
+    this.buildFestive();
     this.group.add(bakeStatic(this.statics));
     this.buildProducts();
+    toonify(this.group);
 
     this.hoverMat = new THREE.MeshBasicMaterial({ color: 0xfff3a0, side: THREE.BackSide, transparent: true, opacity: 0.95, depthWrite: false, toneMapped: false });
     this.hover = new THREE.Mesh(new THREE.BufferGeometry(), this.hoverMat);
@@ -125,8 +142,8 @@ export class StoreView {
     this.statics.add(ceiling);
 
     const wall = new THREE.MeshStandardMaterial({ map: wallTexture(), roughness: 0.9 });
-    const wains = new THREE.MeshStandardMaterial({ map: wainscotTexture('#1f8a70'), roughness: 0.5 });
-    const stripe = std('#f2b33d', 0.5);
+    const wains = new THREE.MeshStandardMaterial({ map: wainscotTexture('#5B4FCF'), roughness: 0.5 });
+    const stripe = std('#FFD23F', 0.5);
     const skirting = std('#2b2f36', 0.6);
     const addWall = (len: number, x: number, z: number, rotY: number, from = 0, to = H) => {
       const h = to - from;
@@ -200,7 +217,7 @@ export class StoreView {
     this.doorR.position.set(half / 2, 1.425, frontZ);
     this.group.add(this.doorL, this.doorR);
     this.box(4.6, 0.012, 2.2, std('#2f3640', 0.95), 0, 0.006, frontZ - 1.3);
-    const welcome = new THREE.Mesh(new THREE.PlaneGeometry(4.4, 1.0), new THREE.MeshBasicMaterial({ map: bannerTexture('HOŞ GELDİNİZ', 'Mahalle Market · 08:00 – 23:00', '#1f8a70'), toneMapped: false }));
+    const welcome = new THREE.Mesh(new THREE.PlaneGeometry(4.4, 1.0), new THREE.MeshBasicMaterial({ map: bannerTexture('WELCOME!', 'Corner Market · open 8am – 11pm', '#5B4FCF'), toneMapped: false }));
     welcome.position.set(0, 3.85, frontZ - 0.05);
     welcome.rotation.y = Math.PI;
     this.statics.add(welcome);
@@ -269,7 +286,7 @@ export class StoreView {
       } else if (f.kind === 'endcap') {
         this.box(w, 0.72, d, accent, cx, 0.36, cz, 0.06);
         this.box(w + 0.04, 0.05, d + 0.04, white, cx, 0.72, cz, 0.02);
-        const board = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.42), new THREE.MeshBasicMaterial({ map: bannerTexture('İNDİRİM', '%25 kampanya', '#e11d48', '#fff', 512, 240), toneMapped: false }));
+        const board = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.42), new THREE.MeshBasicMaterial({ map: bannerTexture('SALE', '25% OFF', '#FF5B4F', '#fff', 512, 240), toneMapped: false }));
         this.add(board, cx, 1.9, cz + 0.2);
         this.box(0.03, 1.2, 0.03, metal, cx, 1.2, cz + 0.18);
       } else if (f.kind === 'fridge') {
@@ -343,7 +360,7 @@ export class StoreView {
     const atlas = priceTagAtlas(
       ids.map((id) => {
         const p = getProduct(id);
-        return { key: id, name: p.name, price: formatPrice(promos.has(id) ? p.price * 0.75 : p.price), color: SECTIONS[p.section].color, promo: promos.has(id) };
+        return { key: id, name: productName(id), price: formatPrice(promos.has(id) ? p.price * 0.75 : p.price), color: SECTIONS[p.section].color, promo: promos.has(id) };
       }),
     );
     const tagMat = new THREE.MeshBasicMaterial({ map: atlas.texture, toneMapped: false });
@@ -400,10 +417,10 @@ export class StoreView {
     }
     this.add(prop('menu', 1.4), -17.0, 2.5, -10.9, Math.PI / 2);
     const posters: [string, string, string, number, number, 'star' | 'leaf' | 'drop'][] = [
-      ['%30', 'Tüm cipslerde indirim!', '#e11d48', -17.96, 6.2, 'star'],
-      ['TAZE', 'Her sabah tarladan', '#16a34a', -17.96, 10.6, 'leaf'],
-      ['2 AL', '1 öde · İçeceklerde', '#0ea5b7', 17.96, 5.4, 'drop'],
-      ['YENİ', 'Kapında! ile 15 dk teslimat', '#f59e0b', 17.96, 11.8, 'star'],
+      ['-30%', 'All chips this week!', '#FF5FA8', -17.96, 6.2, 'star'],
+      ['FRESH', 'Picked every morning', '#4FBF5A', -17.96, 10.6, 'leaf'],
+      ['2 FOR 1', 'On all drinks', '#22BFB0', 17.96, 5.4, 'drop'],
+      ['NEW', 'Order Dash · 15 min delivery', '#FF8F3A', 17.96, 11.8, 'star'],
     ];
     for (const [t, s, c, x, z, icon] of posters) {
       const frame = new THREE.Group();
@@ -420,32 +437,89 @@ export class StoreView {
   }
 
   private buildSigns() {
-    for (const s of this.layout.signs) {
-      const sec = SECTIONS[s.section];
-      const h = s.width / 4;
-      const material = new THREE.MeshBasicMaterial({ map: aisleSignTexture(sec.name, sec.color, sec.aisle), toneMapped: false });
-      const front = new THREE.Mesh(new THREE.PlaneGeometry(s.width, h), material);
-      front.position.set(s.x, s.y, s.z);
-      front.rotation.y = s.angle;
-      front.translateZ(0.025);
-      this.statics.add(front);
-      if (!s.hanging) continue;
-      const back = new THREE.Mesh(new THREE.PlaneGeometry(s.width, h), material);
-      back.position.set(s.x, s.y, s.z);
-      back.rotation.y = s.angle + Math.PI;
-      back.translateZ(0.025);
-      this.statics.add(back);
-      const edge = new THREE.Mesh(new RoundedBoxGeometry(s.width + 0.05, h + 0.05, 0.04, 2, 0.02), std('#ffffff', 0.5));
-      edge.position.set(s.x, s.y, s.z);
-      edge.rotation.y = s.angle;
-      this.statics.add(edge);
-      const len = Math.max(0.1, this.layout.wallHeight - (s.y + h / 2));
+    const ink = std(INK, 0.6);
+    const chain = std('#4b4f58', 0.4, 0.6);
+    for (const sgn of this.layout.signs) {
+      const sec = SECTIONS[sgn.section];
+      const h = (sgn.width * 288) / 1024;
+      const material = new THREE.MeshBasicMaterial({ map: aisleSignTexture(sectionName(sgn.section), sec.color, sec.aisle, SECTION_ICON[sgn.section]), toneMapped: false, transparent: true, alphaTest: 0.5 });
+      const g = new THREE.Group();
+      g.position.set(sgn.x, sgn.y, sgn.z);
+      g.rotation.y = sgn.angle;
+      const slab = new THREE.Mesh(new RoundedBoxGeometry(sgn.width * 0.985, h * 0.94, 0.07, 2, 0.03), ink);
+      g.add(slab);
+      for (const side of sgn.hanging ? [1, -1] : [1]) {
+        const face = new THREE.Mesh(new THREE.PlaneGeometry(sgn.width, h), material);
+        face.position.z = side * 0.037;
+        if (side < 0) face.rotation.y = Math.PI;
+        g.add(face);
+      }
+      if (!sgn.hanging) g.translateZ(0.05);
+      this.statics.add(g);
+      if (!sgn.hanging) continue;
+      const len = Math.max(0.1, this.layout.wallHeight - (sgn.y + h / 2));
       for (const sx of [-1, 1]) {
-        const wire = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, len, 4), std('#444', 0.5));
-        wire.position.set(s.x + Math.cos(s.angle) * sx * s.width * 0.4, s.y + h / 2 + len / 2, s.z - Math.sin(s.angle) * sx * s.width * 0.4);
-        this.statics.add(wire);
+        for (let k = 0; k < Math.ceil(len / 0.12); k++) {
+          const link = new THREE.Mesh(new THREE.TorusGeometry(0.035, 0.009, 4, 8), chain);
+          const y = sgn.y + h / 2 + 0.05 + k * 0.12;
+          link.position.set(sgn.x + Math.cos(sgn.angle) * sx * sgn.width * 0.38, y, sgn.z - Math.sin(sgn.angle) * sx * sgn.width * 0.38);
+          link.rotation.y = sgn.angle + (k % 2) * (Math.PI / 2);
+          this.statics.add(link);
+        }
       }
     }
+  }
+
+  /** Bunting across the ceiling, balloons by the door, mural on the back wall. */
+  private buildFestive() {
+    const colors = ['#FF5B4F', '#FFD23F', '#4FBF5A', '#3FA2F7', '#FF5FA8', '#7C5CFF', '#FF8F3A'];
+    const flagMats = colors.map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.7, side: THREE.DoubleSide }));
+    const string = std(INK, 0.6);
+    const H = this.layout.wallHeight;
+    const lines: [number, number, number, number][] = [
+      [-17, -6, 17, -6],
+      [-17, 4.8, 17, 4.8],
+      [-17, 13.6, 17, 13.6],
+    ];
+    for (const [x0, z0, x1, z1] of lines) {
+      const len = Math.hypot(x1 - x0, z1 - z0);
+      const n = Math.floor(len / 0.55);
+      for (let i = 0; i < n; i++) {
+        const t = (i + 0.5) / n;
+        const sag = Math.sin(Math.PI * ((i % 12) / 12)) * 0.35;
+        const x = x0 + (x1 - x0) * t;
+        const z = z0 + (z1 - z0) * t;
+        const shape = new THREE.Shape();
+        shape.moveTo(-0.17, 0);
+        shape.lineTo(0.17, 0);
+        shape.lineTo(0, -0.34);
+        shape.closePath();
+        const flag = new THREE.Mesh(new THREE.ShapeGeometry(shape), flagMats[i % flagMats.length]);
+        flag.position.set(x, H - 0.35 - sag, z);
+        this.statics.add(flag);
+      }
+      const rope = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.006, len, 4).rotateZ(Math.PI / 2), string);
+      rope.position.set((x0 + x1) / 2, H - 0.35, (z0 + z1) / 2);
+      this.statics.add(rope);
+    }
+    // balloon bunches either side of the entrance
+    for (const bx of [-3.0, 3.0]) {
+      for (let i = 0; i < 5; i++) {
+        const c = colors[(i + (bx > 0 ? 2 : 0)) % colors.length];
+        const balloon = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 12).scale(1, 1.18, 1), new THREE.MeshStandardMaterial({ color: c, roughness: 0.3 }));
+        const a = (i / 5) * Math.PI * 2;
+        const y = 2.3 + (i % 2) * 0.35;
+        balloon.position.set(bx + Math.cos(a) * 0.28, y, this.layout.bounds.maxZ - 0.55 + Math.sin(a) * 0.2);
+        this.statics.add(balloon);
+        const str = new THREE.Mesh(new THREE.CylinderGeometry(0.004, 0.004, y - 0.9, 3), string);
+        str.position.set(bx, (y + 0.9) / 2, this.layout.bounds.maxZ - 0.55);
+        this.statics.add(str);
+      }
+    }
+    // mural above the chillers
+    const mural = new THREE.Mesh(new THREE.PlaneGeometry(16, 0.8), new THREE.MeshBasicMaterial({ map: bannerTexture('★  FRESH EVERY DAY  ★  MILK · EGGS · CHEESE · YOGURT  ★', '', '#5B4FCF', '#FFF4DC', 2048, 102), toneMapped: false }));
+    mural.position.set(0, 4.1, this.layout.bounds.minZ + 0.02);
+    this.statics.add(mural);
   }
 
   private displayFrame(d: Display): THREE.Group {

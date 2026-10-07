@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { prop } from './assets';
 import { asphaltTexture, pavementTexture, bannerTexture } from './textures';
 import { bakeStatic } from './batch';
+import { toonify } from './toon';
 
 const CITY = 5; // KayKit city kit → metres
 
@@ -105,11 +106,11 @@ export class OutsideView {
     statics.add(dumpster);
 
     // storefront sign above the door, outside
-    const sign = new THREE.Mesh(new THREE.PlaneGeometry(8, 1.5), new THREE.MeshBasicMaterial({ map: bannerTexture('MAHALLE MARKET', 'Taze · Hızlı · Kapında!', '#1f8a70'), toneMapped: false }));
+    const sign = new THREE.Mesh(new THREE.PlaneGeometry(8, 1.5), new THREE.MeshBasicMaterial({ map: bannerTexture('CORNER MARKET', 'fresh · fast · Order Dash ready', '#5B4FCF'), toneMapped: false }));
     sign.position.set(0, 4.0, frontZ + 0.08);
     statics.add(sign);
     // awning
-    const awning = new THREE.Mesh(new THREE.BoxGeometry(36.2, 0.12, 1.6), new THREE.MeshStandardMaterial({ color: '#1f8a70', roughness: 0.7 }));
+    const awning = new THREE.Mesh(new THREE.BoxGeometry(36.2, 0.12, 1.6), new THREE.MeshStandardMaterial({ color: '#5B4FCF', roughness: 0.7 }));
     awning.position.set(0, 3.35, frontZ + 0.75);
     awning.rotation.x = 0.12;
     statics.add(awning);
@@ -130,6 +131,7 @@ export class OutsideView {
       this.cars.push({ obj, lane, speed: 6 + Math.random() * 4, x: -70 + i * 30 });
     }
     this.roadZ = [roadZ0 + 2.1, roadZ1 - 2.1];
+    toonify(this.group);
   }
 
   private roadZ: [number, number];

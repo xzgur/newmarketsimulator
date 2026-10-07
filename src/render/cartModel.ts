@@ -10,12 +10,13 @@ import { getProduct } from '../data/products';
 import type { OrderSession } from '../logic/order';
 import { createProductMesh } from './productMeshes';
 import { normalizeGeometry } from './batch';
-import { DISPLAY_FONT, BODY_FONT, roundRect } from './textures';
+import { DISPLAY_FONT, BODY_FONT, INK, roundRect } from './textures';
+import { toonify } from './toon';
 
-export const BAG_COLORS = ['#3b82f6', '#f97316', '#10b981'];
+export const BAG_COLORS = ['#3FA2F7', '#FF8F3A', '#4FBF5A'];
 
 const chrome = new THREE.MeshStandardMaterial({ color: '#d9dee5', metalness: 0.85, roughness: 0.38, envMapIntensity: 0.6 });
-const red = new THREE.MeshStandardMaterial({ color: '#e11d48', roughness: 0.45 });
+const red = new THREE.MeshStandardMaterial({ color: '#FF5B4F', roughness: 0.45 });
 const blackPlastic = new THREE.MeshStandardMaterial({ color: '#1f2328', roughness: 0.6 });
 const grey = new THREE.MeshStandardMaterial({ color: '#9aa1ab', roughness: 0.5, metalness: 0.3 });
 
@@ -124,16 +125,16 @@ function bagTexture(n: number, color: string): THREE.CanvasTexture {
   ctx.arc(128, 130, 62, 0, Math.PI * 2);
   ctx.fill();
   ctx.fillStyle = '#fff';
-  ctx.font = `700 84px ${DISPLAY_FONT}`;
+  ctx.font = `800 90px ${DISPLAY_FONT}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(String(n), 128, 138);
-  ctx.fillStyle = '#1f8a70';
+  ctx.fillStyle = INK;
   roundRect(ctx, 40, 202, 176, 36, 18);
   ctx.fill();
-  ctx.fillStyle = '#fff';
+  ctx.fillStyle = '#FFD23F';
   ctx.font = `800 22px ${BODY_FONT}`;
-  ctx.fillText('MAHALLE MARKET', 128, 221);
+  ctx.fillText('ORDER DASH', 128, 221);
   // crinkles
   ctx.strokeStyle = 'rgba(0,0,0,0.05)';
   ctx.lineWidth = 3;
@@ -188,11 +189,11 @@ export class ShoppingCart {
   private time = 0;
   private wheelSpin = 0;
 
-  constructor() {
+  constructor(bagCount = 3) {
     const basket = new THREE.Mesh(buildBasket(), chrome);
     basket.castShadow = true;
     this.group.add(basket);
-    const { topY, zBack, wTop, zFrontTop } = BASKET;
+    const { topY, wTop, zFrontTop } = BASKET;
     // handle bar with red grip
     const grip = new THREE.Mesh(new THREE.CapsuleGeometry(0.022, 0.5, 4, 12).rotateZ(Math.PI / 2), red);
     grip.position.set(0, 1.04, -0.52);
@@ -209,15 +210,6 @@ export class ShoppingCart {
     const bumper = new THREE.Mesh(new RoundedBoxGeometry(wTop + 0.04, 0.06, 0.05, 2, 0.02), red);
     bumper.position.set(0, topY - 0.02, zFrontTop + 0.02);
     this.group.add(bumper);
-    const seat = new THREE.Mesh(new RoundedBoxGeometry(wTop - 0.06, 0.2, 0.02, 2, 0.008), red);
-    seat.position.set(0, topY - 0.14, zBack + 0.03);
-    seat.rotation.x = 0.12;
-    this.group.add(seat);
-    // logo plate on the seat
-    const plate = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.1), new THREE.MeshBasicMaterial({ map: plateTexture(), toneMapped: true }));
-    plate.position.set(0, topY - 0.12, zBack + 0.015);
-    plate.rotation.set(0.12, Math.PI, 0);
-    this.group.add(plate);
     // casters
     for (const [x, z] of [
       [-0.2, 0.4],
@@ -235,19 +227,20 @@ export class ShoppingCart {
       this.wheels.push(wheel);
     }
 
-    // bags
+    // bags: evenly spaced along the basket so every one is visible from the handle
     this.bagHolder.position.y = BASKET.bottomY + 0.01;
     this.group.add(this.bagHolder);
-    const bagD = 0.25;
-    for (let i = 0; i < 3; i++) {
+    const zFront = 0.27;
+    const zRear = -0.29;
+    for (let i = 0; i < bagCount; i++) {
       const v = this.makeBag(i);
-      v.root.position.set(0, 0, 0.31 - i * 0.29);
-      v.root.userData.baseZ = v.root.position.z;
-      v.root.userData.baseD = bagD;
+      const z = bagCount === 1 ? 0 : zFront - (i * (zFront - zRear)) / (bagCount - 1);
+      v.root.position.set(0, 0, z);
       this.bagHolder.add(v.root);
       this.bags.push(v);
       this.hitTargets.push(v.hit);
     }
+    toonify(this.group);
   }
 
   private makeBag(i: number): BagView {
@@ -278,6 +271,10 @@ export class ShoppingCart {
     root.add(knot);
     const items = new THREE.Group();
     root.add(items);
+    const badge = new THREE.Sprite(new THREE.SpriteMaterial({ map: badgeTexture(i + 1, BAG_COLORS[i]), depthWrite: false, transparent: true }));
+    badge.scale.set(0.11, 0.11, 1);
+    badge.position.set(0.25, h * 0.55, 0);
+    root.add(badge);
     const hit = new THREE.Mesh(new THREE.BoxGeometry(w + 0.04, h + 0.1, d + 0.02), new THREE.MeshBasicMaterial({ visible: false }));
     hit.position.y = (h + 0.1) / 2;
     hit.userData.bagIndex = i;
@@ -386,21 +383,23 @@ export class ShoppingCart {
   }
 }
 
-function plateTexture(): THREE.CanvasTexture {
+function badgeTexture(n: number, color: string): THREE.CanvasTexture {
   const c = document.createElement('canvas');
-  c.width = 256;
-  c.height = 86;
+  c.width = c.height = 96;
   const ctx = c.getContext('2d')!;
-  ctx.fillStyle = '#1f8a70';
-  roundRect(ctx, 0, 0, 256, 86, 20);
+  ctx.fillStyle = INK;
+  ctx.beginPath();
+  ctx.arc(48, 48, 46, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(48, 48, 38, 0, Math.PI * 2);
   ctx.fill();
   ctx.fillStyle = '#fff';
-  ctx.font = `700 34px ${DISPLAY_FONT}`;
+  ctx.font = `800 56px ${DISPLAY_FONT}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText('MAHALLE', 128, 34);
-  ctx.font = `800 20px ${BODY_FONT}`;
-  ctx.fillText('MARKET', 128, 66);
+  ctx.fillText(String(n), 48, 54);
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace;
   return t;

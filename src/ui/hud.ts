@@ -1,24 +1,29 @@
 /**
- * DOM overlay: the "Kapında!" picker app on the phone mounted to the cart,
- * crosshair + hover card, held item card, timer, toasts, combo popups and
- * full-screen menus (loading, title with mood picker, pause, win, lose).
+ * DOM overlay: main menu, shift select, settings, how-to, pause, results;
+ * in-game HUD (timer, objective, crosshair, hover / held cards, bag bar,
+ * toasts, combo popups, PA subtitles) and the Order Dash phone app.
  */
-import type { OrderDef } from '../data/order';
 import { getProduct, SECTIONS, formatPrice } from '../data/products';
+import { LEVELS, type LevelDef, type OrderDef } from '../data/order';
 import { formatTime } from '../logic/gameFlow';
-import { RULES, type OrderSession } from '../logic/order';
+import { ruleLines, type OrderSession } from '../logic/order';
 import { BAG_COLORS } from '../render/cartModel';
-import { MOODS, type MoodId } from '../render/mood';
-import type { Quality } from '../render/post';
+import { assetUrl } from '../render/assets';
+import { LANGS, productName, sectionName, setLang, t, type Lang } from '../i18n';
+import { isUnlocked, type Progress, type Settings } from '../settings';
+import type { MoodId } from '../render/moodIds';
 
 export interface HudCallbacks {
-  start(mood: MoodId, quality: Quality): void;
+  play(level: number): void;
   restart(): void;
   resume(): void;
+  toMenu(): void;
+  next(): void;
   accept(): void;
   complete(): void;
   togglePhone(): void;
-  setMood(mood: MoodId): void;
+  settingsChanged(s: Settings, changed: keyof Settings): void;
+  click(): void;
 }
 
 const h = <K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, html?: string): HTMLElementTagNameMap[K] => {
@@ -32,7 +37,13 @@ export function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 }
 
+export function sectionLabel(pid: string): string {
+  const s = SECTIONS[getProduct(pid).section];
+  return s.aisle > 0 ? `${t('aisle', { n: s.aisle })} · ${sectionName(s.id)}` : sectionName(s.id);
+}
+
 type PhoneScreen = 'idle' | 'incoming' | 'picking' | 'courier' | 'delivered' | 'failed';
+type Screen = 'loading' | 'menu' | 'levels' | 'settings' | 'howto' | 'pause' | 'won' | 'lost';
 
 export class Hud {
   readonly root: HTMLDivElement;
@@ -42,70 +53,71 @@ export class Hud {
   private crosshair: HTMLDivElement;
   private hoverCard: HTMLDivElement;
   private heldCard: HTMLDivElement;
+  private bagBar: HTMLDivElement;
   private timer: HTMLDivElement;
   private objective: HTMLDivElement;
   private toasts: HTMLDivElement;
   private popups: HTMLDivElement;
   private hint: HTMLDivElement;
-  private screens: Record<'loading' | 'title' | 'pause' | 'won' | 'lost', HTMLDivElement>;
+  private pa: HTMLDivElement;
+  private banner: HTMLDivElement;
+  private screens = new Map<Screen, HTMLDivElement>();
+  private current: Screen | null = null;
+  private settingsReturn: Screen = 'menu';
   private thumbs: Record<string, string> = {};
   screen: PhoneScreen = 'idle';
   phoneOpen = false;
   private sig = '';
-  private selectedMood: MoodId = 'day';
-  private selectedQuality: Quality = 'high';
   courierEta = 0;
+  order: OrderDef = LEVELS[0].order;
+  level: LevelDef = LEVELS[0];
 
-  constructor(parent: HTMLElement, private order: OrderDef, private cb: HudCallbacks) {
+  constructor(
+    parent: HTMLElement,
+    private cb: HudCallbacks,
+    private settings: Settings,
+    private progress: Progress,
+  ) {
     this.root = h('div', 'hud');
     parent.appendChild(this.root);
-
-    this.crosshair = h('div', 'crosshair', '<i></i>');
+    this.crosshair = h('div', 'crosshair hidden', '<i></i>');
     this.hoverCard = h('div', 'hover-card hidden');
     this.heldCard = h('div', 'held-card hidden');
-    this.timer = h('div', 'timer hidden', '<span class="t-label">KALAN</span><span class="t-val">5:00</span>');
+    this.bagBar = h('div', 'bag-bar hidden');
+    this.timer = h('div', 'timer hidden');
     this.objective = h('div', 'objective hidden');
     this.toasts = h('div', 'toasts');
     this.popups = h('div', 'popups');
-    this.hint = h(
-      'div',
-      'controls-hint hidden',
-      '<span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> it</span><span><kbd>Fare</kbd> bak</span><span><kbd>Sol tık</kbd> al / poşete koy</span><span><kbd>Sağ tık</kbd> geri bırak</span><span><kbd>Shift</kbd> koş</span><span><kbd>Tab</kbd> telefon</span><span><kbd>Esc</kbd> duraklat</span>',
-    );
-
-    // phone
+    this.hint = h('div', 'controls-hint hidden');
+    this.pa = h('div', 'pa hidden');
+    this.banner = h('div', 'shift-banner hidden');
     this.phone = h('div', 'phone hidden');
     const bezel = h('div', 'phone-bezel');
     const status = h('div', 'phone-status');
     this.phoneClock = h('span', '', '09:41');
-    status.appendChild(this.phoneClock);
-    status.appendChild(h('span', 'phone-notch'));
-    status.appendChild(h('span', '', '5G ▮▮▮ 🔋'));
-    bezel.appendChild(status);
+    status.append(this.phoneClock, h('span', 'phone-notch'), h('span', '', '5G ▮▮▮'));
     this.phoneScreen = h('div', 'phone-screen');
-    bezel.appendChild(this.phoneScreen);
+    bezel.append(status, this.phoneScreen);
     this.phone.appendChild(bezel);
     this.phone.addEventListener('click', (e) => {
-      const t = e.target as HTMLElement;
-      if (t.closest('[data-act=accept]')) this.cb.accept();
-      else if (t.closest('[data-act=complete]')) this.cb.complete();
-      else if (t.closest('[data-act=toggle]')) this.cb.togglePhone();
+      const el = e.target as HTMLElement;
+      if (el.closest('[data-act=accept]')) this.cb.accept();
+      else if (el.closest('[data-act=complete]')) this.cb.complete();
+      else if (el.closest('[data-act=toggle]')) this.cb.togglePhone();
     });
-
-    this.root.append(this.crosshair, this.hoverCard, this.heldCard, this.timer, this.objective, this.toasts, this.popups, this.hint, this.phone);
-
-    this.screens = {
-      loading: this.buildLoading(),
-      title: this.buildTitle(),
-      pause: this.buildPause(),
-      won: this.buildEnd('won'),
-      lost: this.buildEnd('lost'),
-    };
-    for (const s of Object.values(this.screens)) this.root.appendChild(s);
+    this.root.append(this.crosshair, this.hoverCard, this.heldCard, this.bagBar, this.timer, this.objective, this.toasts, this.popups, this.hint, this.pa, this.banner, this.phone);
+    for (const s of ['loading', 'menu', 'levels', 'settings', 'howto', 'pause', 'won', 'lost'] as Screen[]) {
+      const el = h('div', `screen screen-${s} hidden`);
+      el.addEventListener('click', (e) => this.onScreenClick(s, e));
+      el.addEventListener('input', (e) => this.onSettingInput(e));
+      this.screens.set(s, el);
+      this.root.appendChild(el);
+    }
+    this.renderLoading();
   }
 
-  setThumbnails(t: Record<string, string>) {
-    this.thumbs = t;
+  setThumbnails(t2: Record<string, string>) {
+    this.thumbs = t2;
     this.sig = '';
   }
 
@@ -114,154 +126,279 @@ export class Hud {
     return src ? `<img class="${cls}" src="${src}" alt="">` : `<span class="${cls} ph"></span>`;
   }
 
-  // ------------------------------------------------------------ screens
-  private buildLoading(): HTMLDivElement {
-    const s = h('div', 'screen loading');
-    s.innerHTML = `<div class="logo">MARKET<br><span>KOŞUSU</span></div><div class="load-bar"><i></i></div><div class="load-text">Raflar diziliyor…</div>`;
-    return s;
+  setProgress(p: Progress) {
+    this.progress = p;
   }
 
-  setLoading(p: number, text?: string) {
-    const bar = this.screens.loading.querySelector('.load-bar i') as HTMLElement;
-    bar.style.width = `${Math.round(p * 100)}%`;
-    if (text) (this.screens.loading.querySelector('.load-text') as HTMLElement).textContent = text;
+  // ================================================================ menus
+  private logo(cls = ''): string {
+    return `<img class="logo ${cls}" src="${assetUrl('ui/logo.webp')}" alt="Order Dash">`;
   }
 
-  private buildTitle(): HTMLDivElement {
-    const s = h('div', 'screen title');
-    const moods = (Object.keys(MOODS) as MoodId[])
-      .map(
-        (id) => `<button class="mood-card ${id === this.selectedMood ? 'on' : ''}" data-mood="${id}">
-          <span class="mood-art mood-${id}"></span>
-          <b>${esc(MOODS[id].name)}</b><small>${esc(MOODS[id].sub)}</small></button>`,
-      )
-      .join('');
-    s.innerHTML = `
-      <div class="title-wrap">
-        <div class="logo big">MARKET<br><span>KOŞUSU</span></div>
-        <p class="tagline">Sipariş düştü, saat işliyor. Arabayı kap, reyonları tara, poşetle ve kapıdaki motorcuya yetiştir!</p>
-        <div class="title-grid">
-          <div class="panel-card">
-            <h3>Atmosfer</h3>
-            <div class="moods">${moods}</div>
-            <h3>Grafik</h3>
-            <div class="seg" data-group="quality">
-              <button data-q="high" class="on">Yüksek</button><button data-q="medium">Orta</button><button data-q="low">Düşük</button>
-            </div>
-          </div>
-          <div class="panel-card howto">
-            <h3>Nasıl oynanır?</h3>
-            <ol>
-              <li>Telefonuna gelen siparişi <b>kabul et</b>.</li>
-              <li>Reyonları gez, ürüne nişan al ve <kbd>Sol tık</kbd> ile al.</li>
-              <li>Aşağı, arabadaki poşetlere bak ve <kbd>Sol tık</kbd> ile poşete koy.</li>
-              <li>Benzer ürünlere dikkat! Yanlış ürünü <kbd>Sağ tık</kbd> ile geri bırak.</li>
-              <li>Bitince <kbd>F</kbd> ile siparişi tamamla, motorcu gelsin.</li>
-              <li>Kapıdaki motorcuya bak ve <kbd>E</kbd> ile teslim et!</li>
-            </ol>
-          </div>
+  private renderLoading() {
+    this.screens.get('loading')!.innerHTML = `<div class="loading-box">${this.logo('logo-load')}<div class="load-bar"><i></i></div><div class="load-text">${esc(t('menu.loading'))}</div></div>`;
+  }
+
+  setLoading(p: number, key?: string) {
+    const s = this.screens.get('loading')!;
+    (s.querySelector('.load-bar i') as HTMLElement).style.width = `${Math.round(p * 100)}%`;
+    if (key) (s.querySelector('.load-text') as HTMLElement).textContent = key.startsWith('!') ? key.slice(1) : t(key);
+  }
+
+  private nextLevel(): number {
+    for (const l of LEVELS) if (!(this.progress.stars[l.num] > 0)) return l.num;
+    return LEVELS.length;
+  }
+
+  private renderMenu() {
+    const n = this.nextLevel();
+    const anyDone = Object.keys(this.progress.stars).length > 0;
+    this.screens.get('menu')!.innerHTML = `
+      <div class="menu-wrap">
+        ${this.logo('logo-menu')}
+        <p class="tagline">${esc(t('menu.tagline'))}</p>
+        <div class="menu-buttons">
+          <button class="btn primary xl" data-act="play" data-level="${n}">▶ ${esc(anyDone ? t('menu.continue', { n }) : t('menu.play'))}</button>
+          <button class="btn" data-act="go" data-to="levels">🗂 ${esc(t('menu.shifts'))}</button>
+          <button class="btn" data-act="go" data-to="settings">⚙ ${esc(t('menu.settings'))}</button>
+          <button class="btn" data-act="go" data-to="howto">❓ ${esc(t('menu.howto'))}</button>
         </div>
-        <button class="btn primary big" data-act="start">Vardiyaya Başla</button>
-        <div class="credits">3D modeller: KayKit (Kay Lousberg, CC0) · Yazı tipleri: DynaPuff, Nunito (OFL) · Gökyüzü: Poly Haven (CC0)</div>
+        <div class="lang-row">${LANGS.map((l) => `<button class="chip ${l.id === this.settings.lang ? 'on' : ''}" data-lang="${l.id}">${l.flag} ${l.name}</button>`).join('')}</div>
+      </div>
+      <div class="credits">${esc(t('menu.credits'))}</div>`;
+  }
+
+  private renderLevels() {
+    const cards = LEVELS.map((l) => {
+      const unlocked = isUnlocked(this.progress, l.num);
+      const stars = this.progress.stars[l.num] ?? 0;
+      const best = this.progress.best[l.num];
+      const items = l.order.lines.reduce((a, x) => a + x.qty, 0);
+      return `<button class="level-card ${unlocked ? '' : 'locked'} mood-${l.mood}" data-act="${unlocked ? 'play' : 'locked'}" data-level="${l.num}">
+        <span class="lv-num">${l.num}</span>
+        <span class="lv-title">${esc(t(`lvl.${l.num}.title`))}</span>
+        <span class="lv-desc">${esc(unlocked ? t(`lvl.${l.num}.desc`) : t('menu.locked'))}</span>
+        <span class="lv-meta">🧾 ${items} · 🛍 ${l.order.bagCount} · ⏱ ${formatTime(l.order.timeLimit)}</span>
+        <span class="lv-stars">${[1, 2, 3].map((i) => `<i class="${i <= stars ? 'on' : ''}">★</i>`).join('')}${best ? `<em>${t('menu.best')}: ${best}</em>` : ''}</span>
+        ${unlocked ? '' : '<span class="lock">🔒</span>'}
+      </button>`;
+    }).join('');
+    this.screens.get('levels')!.innerHTML = `
+      <div class="panel wide">
+        <div class="panel-head"><h2>${esc(t('menu.shifts'))}</h2><button class="btn small" data-act="back">← ${esc(t('menu.back'))}</button></div>
+        <div class="level-grid">${cards}</div>
       </div>`;
-    s.addEventListener('click', (e) => {
-      const t = e.target as HTMLElement;
-      const mood = t.closest('[data-mood]') as HTMLElement | null;
-      if (mood) {
-        this.selectedMood = mood.dataset.mood as MoodId;
-        s.querySelectorAll('.mood-card').forEach((c) => c.classList.toggle('on', c === mood));
-        this.cb.setMood(this.selectedMood);
-      }
-      const q = t.closest('[data-q]') as HTMLElement | null;
-      if (q) {
-        this.selectedQuality = q.dataset.q as Quality;
-        s.querySelectorAll('[data-q]').forEach((c) => c.classList.toggle('on', c === q));
-      }
-      if (t.closest('[data-act=start]')) this.cb.start(this.selectedMood, this.selectedQuality);
-    });
-    return s;
   }
 
-  setTitleQuality(q: Quality) {
-    this.selectedQuality = q;
-    this.screens.title.querySelectorAll('[data-q]').forEach((c) => c.classList.toggle('on', (c as HTMLElement).dataset.q === q));
+  private renderSettings() {
+    const s = this.settings;
+    const slider = (key: keyof Settings, label: string, min: number, max: number, step: number, value: number, fmt: (v: number) => string, hint = '') => `
+      <label class="set-row"><span class="set-label">${esc(label)}${hint ? `<small>${esc(hint)}</small>` : ''}</span>
+        <input type="range" id="set-${key}" data-key="${key}" min="${min}" max="${max}" step="${step}" value="${value}">
+        <output>${fmt(value)}</output></label>`;
+    const seg = (key: keyof Settings, label: string, opts: [string, string][], value: string) => `
+      <div class="set-row"><span class="set-label">${esc(label)}</span>
+        <div class="seg">${opts.map(([v, l]) => `<button class="${String(value) === v ? 'on' : ''}" data-seg="${key}" data-val="${v}">${esc(l)}</button>`).join('')}</div></div>`;
+    const pct = (v: number) => `${Math.round(v * 100)}%`;
+    this.screens.get('settings')!.innerHTML = `
+      <div class="panel">
+        <div class="panel-head"><h2>${esc(t('set.title'))}</h2><button class="btn small primary" data-act="back">${esc(t('set.done'))}</button></div>
+        <div class="set-grid">
+          ${seg('lang', t('set.language'), LANGS.map((l) => [l.id, `${l.flag} ${l.name}`] as [string, string]), s.lang)}
+          ${slider('sensitivity', t('set.sensitivity'), 0.2, 3, 0.05, s.sensitivity, (v) => `${v.toFixed(2)}×`)}
+          ${seg('invertY', t('set.invert'), [['false', t('set.off')], ['true', t('set.on')]], String(s.invertY))}
+          ${slider('fov', t('set.fov'), 60, 95, 1, s.fov, (v) => `${v}°`)}
+          ${slider('music', t('set.music'), 0, 1, 0.01, s.music, pct)}
+          ${slider('muffle', t('set.muffle'), 0, 1, 0.01, s.muffle, pct, t('set.muffleHint'))}
+          ${slider('sfx', t('set.sfx'), 0, 1, 0.01, s.sfx, pct)}
+          ${seg('announcements', t('set.announce'), [['true', t('set.on')], ['false', t('set.off')]], String(s.announcements))}
+          ${seg('quality', t('set.quality'), [['low', t('set.low')], ['medium', t('set.medium')], ['high', t('set.high')]], s.quality)}
+          ${seg('pixel', t('set.pixel'), [['1', t('set.off')], ['2', '2×'], ['3', '3×'], ['4', '4×']], String(s.pixel))}
+          ${seg('mood', t('set.mood'), [['auto', 'Auto'], ['day', t('mood.day')], ['sunset', t('mood.sunset')], ['night', t('mood.night')]], s.mood ?? 'auto')}
+        </div>
+      </div>`;
   }
 
-  private buildPause(): HTMLDivElement {
-    const s = h('div', 'screen pause hidden');
-    s.innerHTML = `<div class="screen-box"><h1>Mola</h1><p>Süre durdu. Hazır olduğunda devam et.</p>
-      <div class="moods small">${(Object.keys(MOODS) as MoodId[]).map((id) => `<button class="mood-card" data-mood="${id}"><span class="mood-art mood-${id}"></span><b>${esc(MOODS[id].name)}</b></button>`).join('')}</div>
-      <div class="btn-row"><button class="btn primary" data-act="resume">Devam Et</button><button class="btn" data-act="restart">Yeniden Başla</button></div></div>`;
-    s.addEventListener('click', (e) => {
-      const t = e.target as HTMLElement;
-      const mood = t.closest('[data-mood]') as HTMLElement | null;
-      if (mood) this.cb.setMood(mood.dataset.mood as MoodId);
-      if (t.closest('[data-act=resume]')) this.cb.resume();
-      if (t.closest('[data-act=restart]')) this.cb.restart();
-    });
-    return s;
+  private renderHowto() {
+    this.screens.get('howto')!.innerHTML = `
+      <div class="panel">
+        <div class="panel-head"><h2>${esc(t('menu.howto'))}</h2><button class="btn small" data-act="back">← ${esc(t('menu.back'))}</button></div>
+        <ol class="howto">${[1, 2, 3, 4, 5, 6].map((i) => `<li><span class="step">${i}</span><p>${t(`how.${i}`)}</p></li>`).join('')}</ol>
+        <div class="howto-keys">${t('how.controls')}</div>
+      </div>`;
   }
 
-  private buildEnd(kind: 'won' | 'lost'): HTMLDivElement {
-    const s = h('div', `screen end ${kind} hidden`);
-    s.innerHTML = `<div class="screen-box"><div class="end-body"></div><div class="btn-row"><button class="btn primary" data-act="restart">${kind === 'won' ? 'Bir Vardiya Daha' : 'Tekrar Dene'}</button></div></div>`;
-    s.addEventListener('click', (e) => {
-      if ((e.target as HTMLElement).closest('[data-act=restart]')) this.cb.restart();
-    });
-    return s;
+  private renderPause() {
+    this.screens.get('pause')!.innerHTML = `
+      <div class="panel narrow center">
+        <h2>${esc(t('pause.title'))}</h2>
+        <p>${esc(t('pause.text'))}</p>
+        <div class="stack">
+          <button class="btn primary" data-act="resume">▶ ${esc(t('pause.resume'))}</button>
+          <button class="btn" data-act="go" data-to="settings">⚙ ${esc(t('menu.settings'))}</button>
+          <button class="btn" data-act="restart">↻ ${esc(t('pause.restart'))}</button>
+          <button class="btn" data-act="menu">⌂ ${esc(t('pause.menu'))}</button>
+        </div>
+      </div>`;
   }
 
-  showScreen(name: 'loading' | 'title' | 'pause' | 'won' | 'lost' | null) {
-    for (const [k, el] of Object.entries(this.screens)) el.classList.toggle('hidden', k !== name);
+  showWon(data: { timeLeft: number; stars: number; mistakes: number; bestCombo: number; score: number; last: boolean }) {
+    const review = t(`end.review${Math.max(1, data.stars)}`);
+    this.screens.get('won')!.innerHTML = `
+      <div class="panel narrow center result">
+        <div class="badge good">${esc(t('end.delivered'))}</div>
+        <h2>${esc(t('end.onTheWay', { id: this.order.id }))}</h2>
+        <div class="stars">${[1, 2, 3].map((i) => `<span class="${i <= data.stars ? 'on' : ''}" style="animation-delay:${i * 0.18}s">★</span>`).join('')}</div>
+        <div class="review"><b>${esc(this.order.customer)}</b> <span>${'★'.repeat(Math.min(5, data.stars + 2))}</span><p>“${esc(review)}”</p></div>
+        <div class="stats">
+          <div><b>${data.score}</b><span>${esc(t('end.score'))}</span></div>
+          <div><b>${formatTime(data.timeLeft)}</b><span>${esc(t('end.timeLeft'))}</span></div>
+          <div><b>x${data.bestCombo}</b><span>${esc(t('end.combo'))}</span></div>
+          <div><b>${data.mistakes}</b><span>${esc(t('end.mistakes'))}</span></div>
+        </div>
+        ${data.last ? `<p class="all-done">${esc(t('end.allDone'))}</p>` : ''}
+        <div class="btn-row">
+          ${data.last ? '' : `<button class="btn primary" data-act="next">${esc(t('end.next'))} →</button>`}
+          <button class="btn" data-act="restart">↻ ${esc(t('end.again'))}</button>
+          <button class="btn" data-act="menu">⌂ ${esc(t('pause.menu'))}</button>
+        </div>
+      </div>`;
+  }
+
+  showLost(bagged: number, total: number, packed: boolean) {
+    this.screens.get('lost')!.innerHTML = `
+      <div class="panel narrow center result">
+        <div class="badge bad">${esc(t('end.timeUp'))}</div>
+        <h2>${esc(t('end.cancelled'))}</h2>
+        <p>${esc(t(packed ? 'end.lateNotDelivered' : 'end.lateNotPacked'))}</p>
+        <div class="stats"><div><b>${bagged}/${total}</b><span>${esc(t('end.bagged'))}</span></div></div>
+        <div class="btn-row">
+          <button class="btn primary" data-act="restart">↻ ${esc(t('end.retry'))}</button>
+          <button class="btn" data-act="menu">⌂ ${esc(t('pause.menu'))}</button>
+        </div>
+      </div>`;
+  }
+
+  showScreen(name: Screen | null) {
+    if (name === 'menu') this.renderMenu();
+    if (name === 'levels') this.renderLevels();
+    if (name === 'settings') {
+      if (this.current && this.current !== 'settings') this.settingsReturn = this.current;
+      this.renderSettings();
+    }
+    if (name === 'howto') this.renderHowto();
+    if (name === 'pause') this.renderPause();
+    this.current = name;
+    for (const [k, el] of this.screens) el.classList.toggle('hidden', k !== name);
     this.root.classList.toggle('menu-open', name !== null);
+    this.root.classList.toggle('menu-dim', name !== null && name !== 'loading');
   }
 
-  showWon(data: { timeLeft: number; stars: number; mistakes: number; penalties: number; bestCombo: number; score: number }) {
-    const review = data.stars === 3 ? 'Işık hızında geldi, yumurtalar sapasağlam! Teşekkürler 💚' : data.stars === 2 ? 'Her şey tamamdı, eline sağlık 🙂' : 'Biraz geç geldi ama sorun değil.';
-    this.screens.won.querySelector('.end-body')!.innerHTML = `
-      <div class="end-badge">TESLİM EDİLDİ</div>
-      <h1>Sipariş ${esc(this.order.id)} yolda!</h1>
-      <div class="stars">${[1, 2, 3].map((i) => `<span class="${i <= data.stars ? 'on' : ''}" style="animation-delay:${i * 0.18}s">★</span>`).join('')}</div>
-      <div class="review"><b>${esc(this.order.customer)}</b> <span>${'★'.repeat(data.stars + 2)}</span><p>“${esc(review)}”</p></div>
-      <div class="stats">
-        <div><b>${data.score}</b><span>puan</span></div>
-        <div><b>${formatTime(data.timeLeft)}</b><span>kalan süre</span></div>
-        <div><b>x${data.bestCombo}</b><span>en iyi seri</span></div>
-        <div><b>${data.mistakes}</b><span>hatalı ürün</span></div>
-      </div>`;
+  get currentScreen(): Screen | null {
+    return this.current;
   }
 
-  showLost(bagged: number, total: number, note: string) {
-    this.screens.lost.querySelector('.end-body')!.innerHTML = `
-      <div class="end-badge red">SÜRE DOLDU</div>
-      <h1>Sipariş iptal edildi</h1>
-      <p>${esc(note)}</p>
-      <div class="stats"><div><b>${bagged}/${total}</b><span>poşetlenen ürün</span></div></div>`;
+  private onScreenClick(s: Screen, e: Event) {
+    const el = (e.target as HTMLElement).closest('[data-act],[data-lang],[data-seg]') as HTMLElement | null;
+    if (!el) return;
+    this.cb.click();
+    if (el.dataset.lang) {
+      this.applySetting('lang', el.dataset.lang as Lang);
+      this.renderMenu();
+      return;
+    }
+    if (el.dataset.seg) {
+      const key = el.dataset.seg as keyof Settings;
+      const raw = el.dataset.val!;
+      const value = raw === 'true' ? true : raw === 'false' ? false : key === 'pixel' ? Number(raw) : key === 'mood' ? (raw === 'auto' ? null : (raw as MoodId)) : raw;
+      this.applySetting(key, value as never);
+      this.renderSettings();
+      return;
+    }
+    switch (el.dataset.act) {
+      case 'play':
+        this.cb.play(Number(el.dataset.level));
+        break;
+      case 'go':
+        this.showScreen(el.dataset.to as Screen);
+        break;
+      case 'back':
+        this.showScreen(s === 'settings' ? this.settingsReturn : 'menu');
+        break;
+      case 'resume':
+        this.cb.resume();
+        break;
+      case 'restart':
+        this.cb.restart();
+        break;
+      case 'menu':
+        this.cb.toMenu();
+        break;
+      case 'next':
+        this.cb.next();
+        break;
+    }
   }
 
-  // ------------------------------------------------------------ in-game bits
+  private onSettingInput(e: Event) {
+    const input = e.target as HTMLInputElement;
+    const key = input.dataset.key as keyof Settings | undefined;
+    if (!key) return;
+    const v = Number(input.value);
+    this.applySetting(key, v as never);
+    const out = input.parentElement?.querySelector('output');
+    if (out) out.textContent = key === 'sensitivity' ? `${v.toFixed(2)}×` : key === 'fov' ? `${v}°` : `${Math.round(v * 100)}%`;
+  }
+
+  private applySetting<K extends keyof Settings>(key: K, value: Settings[K]) {
+    this.settings[key] = value;
+    if (key === 'lang') {
+      setLang(value as Lang);
+      this.sig = '';
+    }
+    this.cb.settingsChanged(this.settings, key);
+  }
+
+  // ================================================================ in-game
+  setLevel(level: LevelDef) {
+    this.level = level;
+    this.order = level.order;
+    this.sig = '';
+  }
+
   setPlaying(on: boolean) {
-    this.timer.classList.toggle('hidden', !on);
-    this.phone.classList.toggle('hidden', !on);
-    this.objective.classList.toggle('hidden', !on);
-    this.crosshair.classList.toggle('hidden', !on);
+    for (const el of [this.timer, this.phone, this.objective, this.crosshair]) el.classList.toggle('hidden', !on);
+    if (!on) {
+      this.bagBar.classList.add('hidden');
+      this.heldCard.classList.add('hidden');
+      this.hoverCard.classList.add('hidden');
+      this.hint.classList.add('hidden');
+    }
   }
 
   showHint(on: boolean) {
+    this.hint.innerHTML = t('hud.hint');
     this.hint.classList.toggle('hidden', !on);
   }
 
+  shiftBanner(level: LevelDef, newRule: string | null) {
+    this.banner.innerHTML = `<div class="sb-num">${t('menu.shifts')} · ${level.num}/${LEVELS.length}</div><div class="sb-title">${esc(t(`lvl.${level.num}.title`))}</div>${newRule ? `<div class="sb-rule">✨ ${esc(newRule)}</div>` : ''}`;
+    this.banner.classList.remove('hidden');
+    this.banner.classList.remove('out');
+    setTimeout(() => this.banner.classList.add('out'), 3600);
+    setTimeout(() => this.banner.classList.add('hidden'), 4200);
+  }
+
   setTimer(seconds: number, running: boolean) {
-    const v = this.timer.querySelector('.t-val')!;
-    const txt = formatTime(seconds);
-    if (v.textContent !== txt) v.textContent = txt;
+    const html = `<span class="t-label">${t('hud.time')}</span><span class="t-val">${formatTime(seconds)}</span>`;
+    if (this.timer.innerHTML !== html) this.timer.innerHTML = html;
     this.timer.classList.toggle('warn', seconds <= 60 && seconds > 20);
     this.timer.classList.toggle('danger', seconds <= 20);
     this.timer.classList.toggle('paused', !running);
   }
 
   penalty(sec: number) {
-    const el = h('div', 'penalty', `-${sec} sn`);
+    const el = h('div', 'penalty', `-${sec}s`);
     this.timer.appendChild(el);
     setTimeout(() => el.remove(), 1300);
   }
@@ -280,20 +417,31 @@ export class Hud {
     if (html && this.hoverCard.innerHTML !== html) this.hoverCard.innerHTML = html;
   }
 
-  setHeld(pid: string | null) {
+  setHeld(pid: string | null, session: OrderSession | null) {
     this.heldCard.classList.toggle('hidden', !pid);
-    if (!pid) return;
-    const p = getProduct(pid);
-    const html = `${this.thumb(pid)}<div><small>ELİNDE</small><b>${esc(p.name)}</b><span>Poşete bak + <kbd>Sol tık</kbd> · Geri bırak <kbd>Sağ tık</kbd></span></div>`;
+    this.bagBar.classList.toggle('hidden', !pid || !session);
+    if (!pid || !session) return;
+    const html = `${this.thumb(pid)}<div><small>${t('hud.held')}</small><b>${esc(productName(pid))}</b><span>${t('hud.heldHint')}</span></div>`;
     if (this.heldCard.innerHTML !== html) this.heldCard.innerHTML = html;
+    const bars = session.bags
+      .map((b, i) => `<div class="bb ${b.open ? 'open' : ''}" style="--b:${BAG_COLORS[i]}"><kbd>${i + 1}</kbd><b>${t('hud.bag', { n: i + 1 })}</b><span>${b.open ? `${b.items.length}/${session.order.bagCapacity}` : t('app.closed')}</span></div>`)
+      .join('');
+    if (this.bagBar.innerHTML !== bars) this.bagBar.innerHTML = bars;
   }
 
   toast(text: string, kind: 'info' | 'ok' | 'err' = 'info', ms = 2600) {
-    const t = h('div', `toast ${kind}`, esc(text));
-    this.toasts.appendChild(t);
+    const el = h('div', `toast ${kind}`, esc(text));
+    this.toasts.appendChild(el);
     while (this.toasts.children.length > 3) this.toasts.firstChild?.remove();
-    setTimeout(() => t.classList.add('out'), ms - 300);
-    setTimeout(() => t.remove(), ms);
+    setTimeout(() => el.classList.add('out'), ms - 300);
+    setTimeout(() => el.remove(), ms);
+  }
+
+  paSubtitle(text: string) {
+    this.pa.innerHTML = `<span class="pa-icon">📢</span><span>${esc(text)}</span>`;
+    this.pa.classList.remove('hidden');
+    clearTimeout((this.pa as unknown as { _t?: number })._t);
+    (this.pa as unknown as { _t?: number })._t = window.setTimeout(() => this.pa.classList.add('hidden'), 6500);
   }
 
   popup(text: string, cls = '') {
@@ -302,7 +450,7 @@ export class Hud {
     setTimeout(() => p.remove(), 1300);
   }
 
-  // ------------------------------------------------------------ phone
+  // ================================================================ phone
   setPhoneScreen(s: PhoneScreen) {
     this.screen = s;
     this.sig = '';
@@ -320,27 +468,27 @@ export class Hud {
     if (this.phoneClock.textContent !== text) this.phoneClock.textContent = text;
   }
 
-  updatePhone(session: OrderSession, timeLeft: number, heldPid: string | null) {
-    const sig = JSON.stringify([this.screen, this.phoneOpen, session.progress(), session.bags, heldPid, Math.ceil(timeLeft), Math.ceil(this.courierEta), Object.keys(this.thumbs).length]);
+  updatePhone(session: OrderSession, heldPid: string | null) {
+    const sig = JSON.stringify([this.screen, this.phoneOpen, session.progress(), session.bags, heldPid, Math.ceil(this.courierEta), Object.keys(this.thumbs).length, this.order.id]);
     if (sig === this.sig) return;
     this.sig = sig;
-    let html = '';
     const o = this.order;
     const total = o.lines.reduce((a, l) => a + getProduct(l.productId).price * l.qty, 0);
+    const head = (pill: string, cls = '') => `<div class="app-head"><span class="app-logo">Order<b>Dash</b></span><span class="pill ${cls}">${pill}</span></div>`;
+    let html = '';
     switch (this.screen) {
       case 'incoming':
-        html = `
-          <div class="app-head brand"><span class="app-logo">Kapında!</span><span class="pill pulse">YENİ SİPARİŞ</span></div>
+        html = `${head(esc(t('app.new')), 'pulse')}
           <div class="incoming">
             <div class="ring-icon">🛎️</div>
-            <div class="inc-title">Sipariş ${esc(o.id)}</div>
+            <div class="inc-title">${esc(t('app.order', { id: o.id }))}</div>
             <div class="inc-row"><span>👤 ${esc(o.customer)}</span><span>📍 ${o.distanceKm} km</span></div>
             <div class="inc-addr">${esc(o.address)}</div>
             <div class="inc-items">${o.lines.map((l) => this.thumb(l.productId, 'thumb sm')).join('')}</div>
-            <div class="inc-row big"><span>${o.lines.reduce((a, l) => a + l.qty, 0)} ürün</span><span>${formatPrice(total)}</span></div>
+            <div class="inc-row big"><span>${esc(t('app.items', { n: o.lines.reduce((a, l) => a + l.qty, 0) }))}</span><span>${formatPrice(total)}</span></div>
             <div class="inc-note">💬 “${esc(o.note)}”</div>
-            <div class="inc-row"><span>⏱ Hazırlama süresi</span><b>${formatTime(o.timeLimit)}</b></div>
-            <button class="btn accept" data-act="accept">Kabul Et <kbd>Enter</kbd></button>
+            <div class="inc-row"><span>⏱ ${esc(t('app.prep'))}</span><b>${formatTime(o.timeLimit)}</b></div>
+            <button class="btn accept" data-act="accept">${esc(t('app.accept'))} <kbd>Enter</kbd></button>
           </div>`;
         break;
       case 'picking': {
@@ -351,66 +499,53 @@ export class Hud {
         if (!this.phoneOpen) {
           const next = prog.find((l) => l.bagged < l.qty);
           html = `<div class="mini" data-act="toggle">
-            <div class="mini-top"><span class="app-logo sm">Kapında!</span><span class="mini-count">${done}/${totalQ}</span></div>
+            <div class="mini-top"><span class="app-logo sm">Order<b>Dash</b></span><span class="mini-count">${done}/${totalQ}</span></div>
             <div class="bar"><i style="width:${(done / totalQ) * 100}%"></i></div>
-            ${next ? `<div class="mini-next">${this.thumb(next.productId, 'thumb sm')}<div><small>SIRADAKİ</small><b>${esc(getProduct(next.productId).name)}</b><span>${esc(sectionLabel(next.productId))}</span></div></div>` : `<div class="mini-done">✅ Hepsi poşette! <kbd>F</kbd></div>`}
-            <div class="mini-foot"><kbd>Tab</kbd> listeyi aç</div></div>`;
+            ${next ? `<div class="mini-next">${this.thumb(next.productId, 'thumb sm')}<div><small>${esc(t('app.next'))}</small><b>${esc(productName(next.productId))}</b><span>${esc(sectionLabel(next.productId))}</span></div></div>` : `<div class="mini-done">✅ ${esc(t('app.allDone'))} <kbd>F</kbd></div>`}
+            <div class="mini-foot"><kbd>Tab</kbd> ${esc(t('app.openList'))}</div></div>`;
           break;
         }
-        html = `
-          <div class="app-head"><span class="app-logo sm">Kapında!</span><span class="pill">${esc(o.id)} · ${esc(o.customer)}</span></div>
-          <div class="prog"><div class="bar"><i style="width:${(done / totalQ) * 100}%"></i></div><span>${done}/${totalQ} poşette</span></div>
+        html = `${head(`${esc(o.id)} · ${esc(o.customer)}`)}
+          <div class="prog"><div class="bar"><i style="width:${(done / totalQ) * 100}%"></i></div><span>${esc(t('app.bagged', { n: done, t: totalQ }))}</span></div>
           <div class="lines">${prog
             .map((l) => {
               const p = getProduct(l.productId);
               const complete = l.bagged >= l.qty;
               const inHand = heldPid === l.productId;
               const state = complete ? '<span class="st ok">✔</span>' : inHand ? '<span class="st hand">✋</span>' : `<span class="st">${l.bagged}/${l.qty}</span>`;
-              return `<div class="line ${complete ? 'done' : ''}">${this.thumb(l.productId)}<div class="lt"><b>${l.qty > 1 ? `${l.qty}× ` : ''}${esc(p.name)}</b><span style="--c:${SECTIONS[p.section].color}">${esc(sectionLabel(l.productId))}</span></div>${state}</div>`;
+              return `<div class="line ${complete ? 'done' : ''}">${this.thumb(l.productId)}<div class="lt"><b>${l.qty > 1 ? `${l.qty}× ` : ''}${esc(productName(p.id))}</b><span style="--c:${SECTIONS[p.section].color}">${esc(sectionLabel(l.productId))}</span></div>${state}</div>`;
             })
             .join('')}</div>
           <div class="bags-mini">${session.bags
-            .map((b, i) => `<div class="bm ${b.open ? 'open' : ''}" style="--b:${BAG_COLORS[i]}"><b>${i + 1}</b><span>${b.open ? `${b.items.length}/${o.bagCapacity}` : 'kapalı'}</span></div>`)
+            .map((b, i) => `<div class="bm ${b.open ? 'open' : ''}" style="--b:${BAG_COLORS[i]}"><b>${i + 1}</b><span>${b.open ? `${b.items.length}/${o.bagCapacity}` : esc(t('app.closed'))}</span></div>`)
             .join('')}</div>
-          <div class="rules-mini">${RULES.map((r) => `• ${esc(r)}`).join('<br>')}</div>
-          <button class="btn complete ${can.ok ? 'ready' : ''}" data-act="complete" ${can.ok ? '' : 'disabled'}>Siparişi Tamamla <kbd>F</kbd></button>
-          <div class="mini-foot" data-act="toggle"><kbd>Tab</kbd> küçült</div>`;
+          <div class="rules-mini">${ruleLines(o.rules, o.bagCapacity).map((r) => `• ${r}`).join('<br>')}</div>
+          <button class="btn complete ${can.ok ? 'ready' : ''}" data-act="complete" ${can.ok ? '' : 'disabled'}>${esc(t('app.complete'))} <kbd>F</kbd></button>
+          <div class="mini-foot" data-act="toggle"><kbd>Tab</kbd> ${esc(t('app.shrink'))}</div>`;
         break;
       }
       case 'courier': {
         const eta = Math.max(0, Math.ceil(this.courierEta));
         const k = Math.max(0, Math.min(1, 1 - this.courierEta / 12));
-        html = `
-          <div class="app-head brand"><span class="app-logo">Kapında!</span><span class="pill green">HAZIR</span></div>
+        html = `${head(esc(t('app.ready')), 'green')}
           <div class="map">
             <div class="road r1"></div><div class="road r2"></div><div class="road r3"></div>
             <div class="store-pin">🏪</div>
             <div class="scooter" style="left:${8 + k * 62}%;top:${78 - k * 46}%">🛵</div>
           </div>
-          <div class="courier-card">
-            <div class="avatar">🧑‍🦰</div>
-            <div><b>Motorcu ${esc(o.courier)}</b><span>${eta > 0 ? `Mağazaya ${eta} sn` : 'Kapıda bekliyor!'}</span></div>
-          </div>
-          <div class="courier-tip">${eta > 0 ? 'Arabayı girişteki <b>yeşil teslimat noktasına</b> götür.' : 'Motorcuya bak ve <kbd>E</kbd> ile teslim et!'}</div>`;
+          <div class="courier-card"><div class="avatar">🧑</div><div><b>${esc(o.courier)}</b><span>${esc(eta > 0 ? t('app.toStore', { n: eta }) : t('app.atDoor'))}</span></div></div>
+          <div class="courier-tip">${eta > 0 ? t('app.tipGo') : t('app.tipGive')}</div>`;
         break;
       }
       case 'delivered':
-        html = `<div class="app-head brand"><span class="app-logo">Kapında!</span><span class="pill green">TESLİM</span></div>
-          <div class="delivered"><div class="big-check">✓</div><b>Sipariş yola çıktı!</b><span>${esc(o.customer)} bilgilendirildi.</span></div>`;
+        html = `${head(esc(t('app.delivered')), 'green')}<div class="delivered"><div class="big-check">✓</div><b>${esc(t('app.onTheWay'))}</b><span>${esc(t('app.notified', { name: o.customer }))}</span></div>`;
         break;
       case 'failed':
-        html = `<div class="app-head brand"><span class="app-logo">Kapında!</span><span class="pill red">İPTAL</span></div>
-          <div class="delivered"><div class="big-check red">✕</div><b>Süre doldu</b><span>Sipariş iptal edildi.</span></div>`;
+        html = `${head(esc(t('app.cancelled')), 'red')}<div class="delivered"><div class="big-check red">✕</div><b>${esc(t('app.timeUp'))}</b><span>${esc(t('app.cancelledText'))}</span></div>`;
         break;
       default:
-        html = `<div class="app-head brand"><span class="app-logo">Kapında!</span></div><div class="waiting">Sipariş bekleniyor…</div>`;
+        html = `${head('')}<div class="waiting">${esc(t('app.waiting'))}</div>`;
     }
     this.phoneScreen.innerHTML = html;
-    void timeLeft;
   }
-}
-
-export function sectionLabel(pid: string): string {
-  const s = SECTIONS[getProduct(pid).section];
-  return s.aisle > 0 ? `Reyon ${s.aisle} · ${s.name}` : s.name;
 }

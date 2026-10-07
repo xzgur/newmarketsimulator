@@ -31,6 +31,7 @@ export class Input {
   /** When false (menus open), mouse look and clicks are ignored. */
   enabled = false;
   sensitivity = 0.0022;
+  invertY = false;
 
   constructor(private el: HTMLElement) {
     window.addEventListener('keydown', (e) => {
@@ -111,7 +112,7 @@ export class Input {
 
   /** Mouse delta since last call, in radians (yaw, pitch). */
   look(): { yaw: number; pitch: number } {
-    const out = { yaw: -this.mdx * this.sensitivity, pitch: -this.mdy * this.sensitivity };
+    const out = { yaw: -this.mdx * this.sensitivity, pitch: (this.invertY ? 1 : -1) * this.mdy * this.sensitivity };
     this.mdx = 0;
     this.mdy = 0;
     return out;

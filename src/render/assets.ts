@@ -6,6 +6,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
+import { toToon } from './toon';
 
 export interface Assets {
   props: Map<string, THREE.Object3D>;
@@ -50,6 +51,7 @@ export async function loadAssets(onProgress?: (p: number) => void): Promise<Asse
         m.castShadow = true;
         m.receiveShadow = true;
         tuneMaterial(m.material as THREE.MeshStandardMaterial);
+        m.material = toToon(m.material as THREE.Material);
       }
     });
     props.set(child.name, child);
@@ -65,6 +67,7 @@ export async function loadAssets(onProgress?: (p: number) => void): Promise<Asse
         m.receiveShadow = false;
         m.frustumCulled = false;
         tuneMaterial(m.material as THREE.MeshStandardMaterial);
+        m.material = toToon(m.material as THREE.Material);
       }
     });
     characters.set(child.name, child);
@@ -229,7 +232,7 @@ export function createCharacter(base: CharacterBase, outfit?: Outfit): Character
     root.traverse((o) => {
       const m = o as THREE.Mesh;
       if (m.isMesh) {
-        const mat = (m.material as THREE.MeshStandardMaterial).clone();
+        const mat = (m.material as THREE.MeshToonMaterial).clone();
         if (mat.map) mat.map = recolor(mat.map, outfit);
         m.material = mat;
       }

@@ -6,21 +6,25 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 
-const skin = new THREE.MeshStandardMaterial({ color: '#e0a77a', roughness: 0.7 });
-const sleeve = new THREE.MeshStandardMaterial({ color: '#1f8a70', roughness: 0.8 });
-const cuff = new THREE.MeshStandardMaterial({ color: '#f2b33d', roughness: 0.6 });
+import { toonify } from './toon';
+
+// cartoon "glove" hands: cream skin, chunky yellow cuff with a dark band
+const skin = new THREE.MeshStandardMaterial({ color: '#FFE3BF', roughness: 0.7 });
+const sleeve = new THREE.MeshStandardMaterial({ color: '#5B4FCF', roughness: 0.8 });
+const cuff = new THREE.MeshStandardMaterial({ color: '#FFE45C', roughness: 0.6 });
+const band = new THREE.MeshStandardMaterial({ color: '#3B3A46', roughness: 0.6 });
 
 function makeHand(): THREE.Group {
   const g = new THREE.Group();
-  const palm = new THREE.Mesh(new RoundedBoxGeometry(0.085, 0.04, 0.1, 2, 0.018), skin);
+  const palm = new THREE.Mesh(new RoundedBoxGeometry(0.095, 0.05, 0.1, 3, 0.022), skin);
   g.add(palm);
   for (let i = 0; i < 4; i++) {
-    const f = new THREE.Mesh(new THREE.CapsuleGeometry(0.0105, 0.04, 3, 6).rotateX(Math.PI / 2), skin);
-    f.position.set(-0.03 + i * 0.02, -0.012, 0.065);
-    f.rotation.x = 0.9;
+    const f = new THREE.Mesh(new THREE.CapsuleGeometry(0.0135, 0.04, 4, 8).rotateX(Math.PI / 2), skin);
+    f.position.set(-0.034 + i * 0.0225, -0.014, 0.066);
+    f.rotation.x = 0.95;
     g.add(f);
   }
-  const thumb = new THREE.Mesh(new THREE.CapsuleGeometry(0.012, 0.035, 3, 6).rotateX(Math.PI / 2), skin);
+  const thumb = new THREE.Mesh(new THREE.CapsuleGeometry(0.015, 0.035, 4, 8).rotateX(Math.PI / 2), skin);
   thumb.position.set(-0.05, 0.0, 0.03);
   thumb.rotation.set(0.4, -0.6, 0);
   g.add(thumb);
@@ -52,10 +56,14 @@ export class Hands {
 
   private makeArm(): Arm {
     const upper = new THREE.Mesh(new THREE.CapsuleGeometry(0.045, 1, 4, 10), sleeve);
-    const c = new THREE.Mesh(new THREE.CylinderGeometry(0.047, 0.047, 0.03, 12), cuff);
+    const c = new THREE.Mesh(new THREE.CylinderGeometry(0.062, 0.058, 0.09, 16), cuff);
+    const ring = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.022, 16), band);
+    ring.position.y = 0.05;
+    c.add(ring);
     const hand = makeHand();
     upper.castShadow = true;
     this.group.add(upper, c, hand);
+    toonify(this.group);
     return { upper, cuff: c, hand };
   }
 
@@ -66,7 +74,7 @@ export class Hands {
     arm.upper.position.copy(mid);
     arm.upper.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
     arm.upper.scale.set(1, Math.max(0.1, len - 0.09), 1);
-    arm.cuff.position.copy(shoulder.clone().addScaledVector(dir, (len - 0.03) / len));
+    arm.cuff.position.copy(shoulder.clone().addScaledVector(dir, (len - 0.06) / len));
     arm.cuff.quaternion.copy(arm.upper.quaternion);
     arm.hand.position.copy(wrist.clone().addScaledVector(dir.clone().normalize(), 0.05));
     arm.hand.quaternion.copy(handQuat);

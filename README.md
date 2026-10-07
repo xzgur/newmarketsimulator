@@ -1,134 +1,95 @@
-# Market Koşusu
+# Order Dash
 
-Three.js + Vite + TypeScript ile yapılmış, birinci şahıs (FPS) bakışlı bir market sipariş toplama oyunu.
+A first-person grocery-picking game built with Three.js, Vite and TypeScript, in a cel-shaded, ink-outlined style.
 
-Vardiyan başlar başlamaz arabaya monteli telefonun çalar: **Kapında!** uygulamasına online sipariş **#1042** düşmüştür.
-Siparişi kabul edince 5 dakikalık süre başlar. Klasik bir market arabasını iterek canlı marketin reyonlarında
-dolaşırsın. Ürüne nişan alıp elinle alır, arabadaki poşetleri açıp ürünleri yerleştirirsin. Sipariş tamamlanınca
-motorcu scooter'la gelir, kapıdan girip seni bekler. Teslimat noktasına gidip siparişi teslim edince vardiya biter.
+You're the newest picker at the Corner Market. Orders arrive on the **Order Dash** app clipped to your cart. Accept one and the clock starts. Push a real shopping cart through a busy store, grab products off the shelves, pack them into the open bags (keep chemicals away from food and eggs away from heavy bottles), then close the order and hand the bags to the courier at the door.
 
-## Çalıştırma
+## Campaign
+
+| # | Shift | Bags | Rules | Time |
+|---|---|---|---|---|
+| 1 | First Shift | 1 × 5 | — | 3:00 |
+| 2 | Breakfast Club | 2 × 4 | — | 3:30 |
+| 3 | Spring Cleaning | 2 × 4 | chemicals ≠ food | 4:00 |
+| 4 | Picnic Day (sunset) | 2 × 5 | + fragile ≠ heavy | 4:00 |
+| 5 | Rush Hour (sunset, crowded) | 3 × 4 | both | 5:00 |
+| 6 | Night Shift | 3 × 5 | both | 5:00 |
+
+- Each shift awards 1–3 stars based on time left and mistakes.
+- Clearing a shift unlocks the next one.
+- Progress and settings are saved in `localStorage`.
+- The unit tests prove that every shift can be packed under its own rules.
+
+## Run
 
 ```bash
 npm install
 npm run dev        # http://localhost:5173
 npm run build      # typecheck + production build → dist/
-npm run preview    # build'i sunar
-npm test           # birim testleri (vitest)
+npm test           # unit tests (vitest)
 npm run typecheck
-npm run playtest   # dev server açıkken: uçtan uca otomatik oynanış testi
+npm run playtest   # with the dev server running: end-to-end browser playtest
 ```
 
-Grafik kalitesi başlık ekranından seçilir (Yüksek / Orta / Düşük). URL parametreleriyle de verilebilir:
-`?q=low|medium|high&mood=day|sunset|night`.
+To use the shipped 3D assets, run `scripts/fetch-assets.sh` and then `node scripts/build-assets.mjs`. This rebuilds `public/models/*.glb` from the KayKit packs.
 
-## Kontroller
+URL overrides: `?q=low|medium|high`, `?mood=day|sunset|night`.
 
-| Girdi | İşlev |
+## Controls
+
+| Input | Action |
 | --- | --- |
-| `W` `A` `S` `D` | Yürü / yan adım (araba önünde) |
-| Fare (ya da sürükle) | Etrafa bak |
-| `←` `→` | Klavyeyle dön |
-| `Shift` | Koş |
-| `Sol tık` / `E` | Raftan ürün al · nişan aldığın poşete koy · katlı poşeti aç · motorcuya teslim et |
-| `Sağ tık` / `Q` | Elindeki ürünü geri bırak (fırlat) |
-| `1` `2` `3` | Elindeki ürünü doğrudan 1./2./3. poşete koy |
-| `Enter` | Gelen siparişi kabul et |
-| `Tab` | Telefondaki sipariş listesini aç / küçült |
-| `F` | Siparişi tamamla (motorcuyu çağır) |
-| `Esc` | Duraklat (atmosfer seçimi de burada) |
-| `M` | Ses aç/kapat |
+| `W` `A` `S` `D` | Push the cart / strafe |
+| Mouse | Look |
+| `Shift` | Hurry |
+| Left click | Pick a product / put it in the aimed bag / open a bag |
+| Right click | Put the item back |
+| `1` `2` `3` | Drop the held item into bag 1/2/3 |
+| `Tab` | Expand / shrink the Order Dash app |
+| `F` | Close the order (call the courier) |
+| `E` | Hand the bags to the courier |
+| `Esc` / `P` | Pause |
+| `M` | Mute |
 
-## Oyun döngüsü
+## Settings
 
-```
-Başlık ─► Telefon çalıyor (incoming) ─Enter─► Toplama (playing, süre işler)
-            ─F─► Motorcu yolda (courierArriving) ─► Motorcu kapıda (awaitingHandover)
-            ─E─► Teslimat (handover) ─► Kazandın (won, 1-3 yıldız + puan)
-   (süre biterse herhangi bir anda) ─► Kaybettin (lost)
-```
+Settings are on the main menu and in the pause menu:
 
-- **Toplama:** Elinde bir seferde tek ürün taşıyabilirsin. Benzer ürünlere dikkat et:
-  Tam Yağlı / Yarım Yağlı / Laktozsuz süt, Köy 10'lu / 6'lı yumurta, Beyaz peynir / Kaşar,
-  Patates / Mısır cipsi, Su 5L / 1,5L, Bulaşık / Çamaşır deterjanı gibi.
-- **Poşetleme kuralları:**
-  - Temizlik ürünleri gıdayla aynı poşete konmaz.
-  - Yumurta, ağır ürünlerle (5L su) aynı poşete konmaz.
-  - Bir poşete en fazla 5 ürün sığar.
-  - Siparişte olmayan ürünü (ya da fazla adedi) poşete koymaya çalışırsan **5 sn ceza** alırsın.
-    Yanlış ürünü sağ tıkla cezasız geri bırakabilirsin.
-- **Seri ve puan:** Doğru ürünleri peş peşe 14 saniye içinde poşetlersen seri (x2, x3…) büyür. Sonda kalan süre
-  bonus puana dönüşür. Yıldızlar kalan süreye ve hata sayısına göre verilir.
+- **Language:** English, Türkçe, Español, Deutsch.
+- **Mouse:** sensitivity, invert Y, field of view.
+- **Audio:** music volume, "store speaker" muffle amount, SFX volume, PA announcements on/off.
+- **Graphics:** quality (high / medium / low), pixel size (1 = crisp toon, 2–4 = "3D pixel" look), time of day.
 
-## Canlı market
-
-- **Müşteriler:** 8 müşteri reyonlar arasında gezer, raflara bakıp ürün alır ve sepet taşır. Konuşma balonlarıyla
-  laf atar ("Ooo kampanya!"), çarparsan söylenir ("Pardon!"). Kasalarda kasiyerler çalışır.
-- **Mağaza:** Kasalarda yürüyen bant döner, mağaza anonsları yapılır.
-- **Sokak:** Vitrinden arabaların geçtiği sokak görünür. Motorcu scooter'la gelip park eder ve otomatik kapıdan girer.
-- **Ses:** Lo-fi müzik, market uğultusu, araba tekerleği tıkırtısı, barkod bipleri, poşet hışırtısı ve telefon zil
-  sesinin hepsi WebAudio ile kodda üretiliyor.
-- **Atmosfer:** Öğle Telaşı, Gün Batımı ve Gece Vardiyası. Her biri farklı gökyüzü (HDR), ışık, sokak lambası ve
-  renk düzeniyle geliyor.
-
-## Mimari
+## Architecture
 
 ```
 src/
-  data/                 # Saf veri (Three.js yok, test edilebilir)
-    products.ts         #   64 ürün: reyon, şekil, kurgusal marka/etiket, fiyat, oyun etiketleri
-    order.ts            #   Sipariş #1042 (uygulamadaki müşteri, adres, not, süre, poşet kuralları)
-    layout.ts           #   Market planı: 6 reyon + uç standlar, soğutucular, fırın, içecek, manav,
-                        #   kasalar, dekor, çarpışma kutuları, müşteri yol ağı (nav graph + Dijkstra)
-  logic/                # Saf oyun mantığı (birim testli)
-    player.ts           #   FPS hareket: oyuncu + önündeki araba için iki daireli çarpışma, müşteriler
-    collision.ts        #   Daire–AABB itme
-    order.ts            #   OrderSession: el, poşetler, kurallar, ceza, tamamlanma
-    gameFlow.ts         #   Faz durum makinesi + süre + yıldız
+  main.ts            entry: WebGL2 check
+  game.ts            orchestrator: menus, levels, loop, interaction, debug hooks
+  i18n.ts            EN/TR/ES/DE dictionaries, product + section names
+  settings.ts        persisted settings + campaign progress
+  audio.ts           WebAudio SFX, store-speaker music chain, PA announcements
+  input.ts           keyboard / mouse / pointer lock
+  data/              products, level definitions, store layout + nav graph
+  logic/             pure game logic (order/bag rules, player physics, collision, flow)
   render/
-    assets.ts           #   KayKit GLB paketlerini yükler, prop klonlar, karakter kıyafetlerini yeniden boyar
-    store.ts            #   Market binası, reyonlar, ışıklar, tabelalar, InstancedMesh ürünler, hover efekti
-    productMeshes.ts    #   KayKit tarzı ürün modelleri (+ KayKit sebzeleri), malzemeye göre birleştirilmiş
-    cartModel.ts        #   Klasik tel market arabası + içindeki 3 poşet (açılma/bağlanma animasyonu)
-    hands.ts            #   Birinci şahıs kollar: araba sapını tutar, ürünü kaldırır
-    people.ts           #   Müşteri yapay zekası (yol bulma, raf gezme, tepkiler) + kasiyerler
-    courier.ts          #   Motorcu + scooter senaryosu
-    outside.ts          #   Sokak: binalar, yol, trafik, sokak lambaları
-    mood.ts             #   Atmosferler: HDR gökyüzü, güneş, armatürler, nokta ışıklar, renk düzeni
-    post.ts             #   GTAO + Bloom + ACES + renk düzeni/vinyet/grain + SMAA
-    particles.ts        #   Parıltı ve konfeti
-    textures.ts         #   Canvas dokuları: ürün etiketleri (ikonlu), reyon tabelaları, fiyat etiketi atlası…
-    batch.ts            #   Statik geometriyi malzemeye göre birleştirme
-    thumbnails.ts       #   Uygulama/HUD ikonları 3D modellerden render edilir
-  ui/hud.ts             # Kapında! telefon uygulaması, nişangah, kartlar, sayaç, menüler
-  audio.ts              # Prosedürel ses + müzik
-  input.ts              # Klavye + fare (pointer lock, sürükleyerek bakma yedeği)
-  game.ts               # Orkestratör
-tests/logic.test.ts     # Kurallar, plan erişilebilirliği, yol ağı, hareket, faz makinesi
-scripts/
-  fetch-assets.sh       # KayKit paketlerini GitHub'dan indirir (vendor/, git'e girmez)
-  build-assets.mjs      # Kullanılan modelleri public/models/*.glb olarak paketler
-  playtest.mjs          # Playwright ile uçtan uca oynanış testi (ekran görüntüleri: playtest-output/)
+    toon.ts          MeshToonMaterial conversion (4-step ramp)
+    post.ts          ToonScenePass (depth-based ink outlines, pixel mode) → bloom → grade → SMAA
+    store.ts         store interior, signs, festive decor, product instancing
+    cartModel.ts     shopping cart with numbered bags
+    people.ts        animated shoppers + cashier
+    courier.ts       scooter courier
+    hands.ts         first-person cartoon hands
+    mood.ts          day / sunset / night lighting presets
+  ui/hud.ts          menus, HUD, Order Dash phone app
+tests/               vitest unit tests
+scripts/playtest.mjs Playwright end-to-end playtest
 ```
 
-## Hazır assetler ve lisanslar
+## Credits
 
-| Asset | Kaynak | Lisans |
-| --- | --- | --- |
-| Sebze kasaları, sebzeler, ketçap/hardal, kağıt havlu, sütun, kaktüsler, koliler, menü panosu | KayKit Restaurant Bits + Furniture Bits (Kay Lousberg) | CC0 |
-| Sokak binaları, arabalar, sokak lambası, çalılar, yangın musluğu, bank, çöp konteyneri | KayKit City Builder Bits (Kay Lousberg) | CC0 |
-| Müşteriler, kasiyerler, motorcu (animasyonlu karakterler) | KayKit Character Pack: Adventurers (Kay Lousberg) | CC0 |
-| Gökyüzü HDR'ları | Poly Haven (three.js deposu üzerinden) | CC0 |
-| DynaPuff, Nunito yazı tipleri | Google Fonts | OFL (`public/fonts/OFL-*.txt`) |
-
-Ürün paketleri, market arabası, raflar, telefon arayüzü, motorcu kaskı/scooter'ı, tabelalar, etiketler ve tüm sesler
-kodla üretiliyor. Markalar kurgusal.
-
-`public/models/*.glb` dosyaları depoda hazır geliyor. Yeniden üretmek için `bash scripts/fetch-assets.sh && node scripts/build-assets.mjs` çalıştırılır.
-
-## Performans
-
-- **Ürünler:** Raflardaki yaklaşık 7.500 ürün, ürün tipi başına tek bir `InstancedMesh` ile çiziliyor.
-- **Statik sahne:** Malzemeye göre birleştiriliyor ve fiyat etiketleri tek bir doku atlasında toplanıyor. Böylece
-  sahne yaklaşık 270 draw call ve 1M üçgen tutuyor.
-- **Düşük kalite:** Post-process ve gölgeleri kapatır, 1x piksel oranında çizer.
+- Characters, furniture and food models: [KayKit](https://kaylousberg.itch.io/) by Kay Lousberg (CC0).
+- HDR skies: [Poly Haven](https://polyhaven.com/) (CC0).
+- Fonts: Baloo 2 and Nunito (SIL Open Font License, see `public/fonts/`).
+- Store music and the Order Dash logo were supplied by the project owner.
+- Sound effects are synthesized at runtime with WebAudio. Announcements use the browser's speech synthesis.
