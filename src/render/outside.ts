@@ -134,6 +134,18 @@ export class OutsideView {
 
   private roadZ: [number, number];
 
+  private baseColors = new Map<THREE.Material, THREE.Color>();
+
+  /** Scales the brightness of everything outside (night = darker street, lit windows by lamps). */
+  setDaylight(k: number) {
+    this.group.traverse((o) => {
+      const m = (o as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
+      if (!m || !m.color || this.streetLampMaterials.includes(m)) return;
+      if (!this.baseColors.has(m)) this.baseColors.set(m, m.color.clone());
+      m.color.copy(this.baseColors.get(m)!).multiplyScalar(k);
+    });
+  }
+
   update(dt: number) {
     for (const c of this.cars) {
       const dir = c.lane === 0 ? 1 : -1;

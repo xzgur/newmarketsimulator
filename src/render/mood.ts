@@ -30,6 +30,8 @@ export interface MoodDef {
   exposure: number;
   grade: { vignette: number; saturation: number; contrast: number; tint: string; grain: number; bloom: number; bloomThreshold: number };
   fog: string;
+  /** Brightness of the street outside. */
+  daylight: number;
 }
 
 export const MOODS: Record<MoodId, MoodDef> = {
@@ -51,6 +53,7 @@ export const MOODS: Record<MoodId, MoodDef> = {
     exposure: 0.95,
     grade: { vignette: 0.3, saturation: 1.15, contrast: 1.08, tint: '#ffffff', grain: 0.02, bloom: 0.28, bloomThreshold: 2.3 },
     fog: '#cfe3f2',
+    daylight: 1,
   },
   sunset: {
     id: 'sunset',
@@ -70,6 +73,7 @@ export const MOODS: Record<MoodId, MoodDef> = {
     exposure: 1.0,
     grade: { vignette: 0.38, saturation: 1.18, contrast: 1.06, tint: '#fff1e2', grain: 0.025, bloom: 0.4, bloomThreshold: 2.0 },
     fog: '#e8b996',
+    daylight: 0.8,
   },
   night: {
     id: 'night',
@@ -87,8 +91,9 @@ export const MOODS: Record<MoodId, MoodDef> = {
     streetLamps: 4,
     envIntensity: 0.3,
     exposure: 1.1,
-    grade: { vignette: 0.5, saturation: 1.2, contrast: 1.1, tint: '#eef3ff', grain: 0.035, bloom: 0.75, bloomThreshold: 1.4 },
+    grade: { vignette: 0.5, saturation: 1.2, contrast: 1.1, tint: '#eef3ff', grain: 0.035, bloom: 0.45, bloomThreshold: 2.2 },
     fog: '#0b1020',
+    daylight: 0.22,
   },
 };
 
@@ -184,6 +189,7 @@ export class Lighting {
     }
     for (const p of this.streetPoints) p.intensity = m.streetLamps * 6;
     for (const l of outside.streetLampMaterials) l.emissiveIntensity = m.streetLamps;
+    outside.setDaylight(m.daylight);
     for (const n of store.neonMaterials) n.emissiveIntensity = id === 'night' ? 4 : 2;
     this.renderer.toneMappingExposure = m.exposure;
     post.setGrade(m.grade);

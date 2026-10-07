@@ -14,7 +14,7 @@ import { DISPLAY_FONT, BODY_FONT, roundRect } from './textures';
 
 export const BAG_COLORS = ['#3b82f6', '#f97316', '#10b981'];
 
-const chrome = new THREE.MeshStandardMaterial({ color: '#d9dee5', metalness: 0.9, roughness: 0.22 });
+const chrome = new THREE.MeshStandardMaterial({ color: '#d9dee5', metalness: 0.85, roughness: 0.38, envMapIntensity: 0.6 });
 const red = new THREE.MeshStandardMaterial({ color: '#e11d48', roughness: 0.45 });
 const blackPlastic = new THREE.MeshStandardMaterial({ color: '#1f2328', roughness: 0.6 });
 const grey = new THREE.MeshStandardMaterial({ color: '#9aa1ab', roughness: 0.5, metalness: 0.3 });
