@@ -141,6 +141,18 @@ describe('layout', () => {
     }
   });
 
+  it('a shopper with a cart fits in front of every display, facing it', () => {
+    for (const d of layout.displays) {
+      const fx = Math.sin(d.angle);
+      const fz = Math.cos(d.angle);
+      const p = createPlayer(d.x + fx * (d.depth / 2 + 1.42), d.z + fz * (d.depth / 2 + 1.42), d.angle + Math.PI);
+      const x0 = p.x;
+      const z0 = p.z;
+      for (let i = 0; i < 10; i++) stepPlayer(p, { forward: 0, strafe: 0, turn: 0, sprint: false }, 1 / 60, layout.colliders);
+      expect(Math.hypot(p.x - x0, p.z - z0), `display ${d.id} ${d.productId}`).toBeLessThan(0.35);
+    }
+  });
+
   it('nav graph is connected and its nodes are walkable', () => {
     for (const n of layout.nav) {
       expect(layout.colliders.some((b) => circleIntersectsBox(n.x, n.z, 0.3, b))).toBe(false);

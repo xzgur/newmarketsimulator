@@ -116,9 +116,9 @@ export function buildLayout(): StoreLayout {
       link(front[i - 1], front[i]);
     }
   }
-  const midProduceW = node(-14.6, 8.3);
-  const midProduce = node(-11.2, 8.3);
-  const westGate = node(-6.6, 8.3);
+  const midProduceW = node(-14.6, 8.4);
+  const midProduce = node(-11.2, 8.4);
+  const westGate = node(-6.6, 8.4);
   const frontWestGate = node(-6.6, FRONT_Z);
   link(frontWestGate, front[1]);
   link(frontWestGate, front[2]);
@@ -236,8 +236,8 @@ export function buildLayout(): StoreLayout {
   const pW = 1.5;
   const islandX0 = -15.6;
   const islands = [
-    { z: 6.6, front: ['tomato', 'potato', 'onion'], back: ['banana', 'apple', 'orange'] },
-    { z: 10.0, front: ['carrot', 'lettuce', 'lemon'], back: ['cucumber', 'pepper', 'tomato'] },
+    { z: 6.4, front: ['tomato', 'potato', 'onion'], back: ['banana', 'apple', 'orange'] },
+    { z: 10.4, front: ['carrot', 'lettuce', 'lemon'], back: ['cucumber', 'pepper', 'tomato'] },
   ];
   islands.forEach((isl, ii) => {
     furniture.push({ kind: 'produceIsland', section: 'produce', box: { minX: islandX0, maxX: islandX0 + 3 * pW, minZ: isl.z - 0.9, maxZ: isl.z + 0.9 } });
@@ -269,7 +269,7 @@ export function buildLayout(): StoreLayout {
       });
     }
   });
-  signs.push({ section: 'produce', x: islandX0 + 1.5 * pW, y: 2.8, z: 8.3, angle: 0, width: 3.2, hanging: true });
+  signs.push({ section: 'produce', x: islandX0 + 1.5 * pW, y: 2.8, z: 8.4, angle: 0, width: 3.2, hanging: true });
 
   // ---------------------------------------------------------- checkouts
   const checkoutSpots: StoreLayout['checkoutSpots'] = [];

@@ -879,6 +879,10 @@ export class Game {
         p.x = d.x + fx * (d.depth / 2 + 1.42);
         p.z = d.z + fz * (d.depth / 2 + 1.42);
         p.vx = p.vz = 0;
+        p.yaw = d.angle + Math.PI;
+        // let collisions settle (the cart may bump the stand) before aiming
+        for (let i = 0; i < 5; i++) stepPlayer(p, { forward: 0, strafe: 0, turn: 0, sprint: false }, 1 / 60, self.layout.colliders);
+        p.vx = p.vz = 0;
         const items = self.store.instancePositions(d.id);
         items.sort((a, b) => Math.abs(a.y - 1.1) - Math.abs(b.y - 1.1) || Math.hypot(a.x - p.x, a.z - p.z) - Math.hypot(b.x - p.x, b.z - p.z));
         const t = items[0];
