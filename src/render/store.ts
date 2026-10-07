@@ -97,8 +97,8 @@ export class StoreView {
     this.deliveryLabel = new THREE.Sprite(
       new THREE.SpriteMaterial({ map: textTexture('TESLİMAT NOKTASI', 'rgba(39,174,96,0.92)'), depthTest: false }),
     );
-    this.deliveryLabel.scale.set(2.4, 0.6, 1);
-    this.deliveryLabel.position.set(delivery.x, 2.4, delivery.z);
+    this.deliveryLabel.scale.set(1.8, 0.45, 1);
+    this.deliveryLabel.position.set(delivery.x - 1.9, 1.6, delivery.z);
     this.deliveryLabel.visible = false;
     this.group.add(this.deliveryRing, this.deliveryDisc, this.deliveryLabel);
   }
@@ -492,7 +492,7 @@ export class StoreView {
     ringMat.opacity = this.deliveryActive ? 0.55 + 0.4 * pulse : 0.25;
     discMat.opacity = this.deliveryActive ? 0.12 + 0.15 * pulse : 0.05;
     this.deliveryLabel.visible = this.deliveryActive;
-    this.deliveryLabel.position.y = 2.4 + Math.sin(this.time * 2.5) * 0.1;
+    this.deliveryLabel.position.y = 1.6 + Math.sin(this.time * 2.5) * 0.1;
     const fm = this.highlightFrame.material as THREE.LineBasicMaterial;
     fm.opacity = 0.6 + 0.4 * pulse;
   }
