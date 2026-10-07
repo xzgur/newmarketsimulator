@@ -81,7 +81,7 @@ function resolveDynamic(x: number, z: number, r: number, blockers: DynamicBlocke
 }
 
 /** Advances the player; returns true if the cart or body bumped into something. */
-export function stepPlayer(p: PlayerState, input: MoveInput, dt: number, colliders: AABB[], blockers: DynamicBlocker[] = []): boolean {
+export function stepPlayer(p: PlayerState, input: MoveInput, dt: number, colliders: AABB[], blockers: DynamicBlocker[] = [], speedMul = 1): boolean {
   p.yaw = wrapAngle(p.yaw + input.turn * PLAYER.keyTurn * dt);
   const fx = Math.sin(p.yaw);
   const fz = Math.cos(p.yaw);
@@ -90,7 +90,7 @@ export function stepPlayer(p: PlayerState, input: MoveInput, dt: number, collide
   const rz = fx;
   const fwd = Math.max(-1, Math.min(1, input.forward));
   const str = Math.max(-1, Math.min(1, input.strafe));
-  const top = fwd < 0 ? PLAYER.reverse : input.sprint ? PLAYER.sprint : PLAYER.walk;
+  const top = (fwd < 0 ? PLAYER.reverse : input.sprint ? PLAYER.sprint : PLAYER.walk) * speedMul;
   let tx = fx * fwd + rx * str * 0.7;
   let tz = fz * fwd + rz * str * 0.7;
   const len = Math.hypot(tx, tz);

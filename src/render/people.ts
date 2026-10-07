@@ -26,8 +26,9 @@ export function attachToBone(ch: CharacterInstance, boneName: string, obj: THREE
 class Bubble {
   sprite: THREE.Sprite;
   private t = 0;
+  private dur = 2.4;
   constructor(parent: THREE.Object3D, y: number) {
-    this.sprite = new THREE.Sprite(new THREE.SpriteMaterial({ depthTest: true, depthWrite: false, transparent: true }));
+    this.sprite = new THREE.Sprite(new THREE.SpriteMaterial({ transparent: true, alphaTest: 0.5 }));
     this.sprite.scale.set(1.1, 0.41, 1);
     this.sprite.position.y = y;
     this.sprite.visible = false;
@@ -40,6 +41,7 @@ class Bubble {
     m.needsUpdate = true;
     this.sprite.visible = true;
     this.t = dur;
+    this.dur = dur;
   }
   get active() {
     return this.t > 0;
@@ -49,7 +51,7 @@ class Bubble {
     this.t -= dt;
     const m = this.sprite.material as THREE.SpriteMaterial;
     m.opacity = Math.min(1, this.t * 3);
-    const s = Math.min(1, (2.4 - this.t) * 8 + 0.6);
+    const s = Math.min(1, (this.dur - this.t) * 8 + 0.6);
     this.sprite.scale.set(1.1 * Math.min(1, s), 0.41 * Math.min(1, s), 1);
     if (this.t <= 0) this.sprite.visible = false;
   }
@@ -163,6 +165,11 @@ export class People {
   /** Customers block the player like soft obstacles. */
   blockers(): DynamicBlocker[] {
     return this.npcs.map((n) => ({ x: n.group.position.x, z: n.group.position.z, r: 0.32 }));
+  }
+
+  /** Debug: every shopper says something (screenshots / play-tests). */
+  sayAll(text: string) {
+    for (const n of this.npcs) n.bubble.say(text, 30);
   }
 
   /** The player bumped near (x,z) with some speed. */

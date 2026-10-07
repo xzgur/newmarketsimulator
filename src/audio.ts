@@ -12,7 +12,10 @@ export class Sfx {
   private sfxBus!: GainNode;
   private musicGain!: GainNode;
   private hp!: BiquadFilterNode;
+  private hp2!: BiquadFilterNode;
   private lp!: BiquadFilterNode;
+  private lp2!: BiquadFilterNode;
+  private far!: GainNode;
   private mid!: BiquadFilterNode;
   private dry!: GainNode;
   private wet!: GainNode;
@@ -50,22 +53,54 @@ export class Sfx {
     this.music.loop = true;
     this.music.crossOrigin = 'anonymous';
     const src = ctx.createMediaElementSource(this.music);
-    this.hp = ctx.createBiquadFilter();
-    this.hp.type = 'highpass';
-    this.lp = ctx.createBiquadFilter();
-    this.lp.type = 'lowpass';
-    this.mid = ctx.createBiquadFilter();
-    this.mid.type = 'peaking';
-    this.mid.frequency.value = 1600;
-    this.mid.Q.value = 0.8;
+    // PA speakers are mono, band-limited (no bass, no air), a bit boxy and
+    // slightly overdriven; several ceiling speakers + the hall add echoes.
+    const mono = ctx.createGain();
+    mono.channelCount = 1;
+    mono.channelCountMode = 'explicit';
+    mono.channelInterpretation = 'speakers';
+    const filt = (type: BiquadFilterType, q = 0.9) => {
+      const f = ctx.createBiquadFilter();
+      f.type = type;
+      f.Q.value = q;
+      return f;
+    };
+    this.hp = filt('highpass');
+    this.hp2 = filt('highpass');
+    this.lp = filt('lowpass');
+    this.lp2 = filt('lowpass');
+    this.mid = filt('peaking', 1.4);
+    this.mid.frequency.value = 1250;
+    const drive = ctx.createWaveShaper();
+    const curve = new Float32Array(1024);
+    for (let i = 0; i < curve.length; i++) {
+      const x = (i / (curve.length - 1)) * 2 - 1;
+      curve[i] = Math.tanh(x * 1.8) / Math.tanh(1.8);
+    }
+    drive.curve = curve;
+    drive.oversample = '2x';
     const verb = ctx.createConvolver();
-    verb.buffer = this.roomImpulse(1.6);
+    verb.buffer = this.roomImpulse(1.9);
     this.dry = ctx.createGain();
     this.wet = ctx.createGain();
+    this.far = ctx.createGain();
     this.musicGain = ctx.createGain();
-    src.connect(this.hp).connect(this.lp).connect(this.mid);
-    this.mid.connect(this.dry).connect(this.musicGain);
-    this.mid.connect(verb).connect(this.wet).connect(this.musicGain);
+    src.connect(mono).connect(this.hp).connect(this.hp2).connect(this.mid).connect(drive).connect(this.lp).connect(this.lp2);
+    this.lp2.connect(this.dry).connect(this.musicGain);
+    this.lp2.connect(verb).connect(this.wet).connect(this.musicGain);
+    // the other ceiling speakers further down the aisles
+    for (const [d, g] of [
+      [0.023, 0.55],
+      [0.047, 0.4],
+      [0.081, 0.25],
+    ]) {
+      const delay = ctx.createDelay(0.2);
+      delay.delayTime.value = d;
+      const gain = ctx.createGain();
+      gain.gain.value = g;
+      this.lp2.connect(delay).connect(gain).connect(this.far);
+    }
+    this.far.connect(this.musicGain);
     this.musicGain.connect(this.master);
     this.apply();
     if (this.musicWanted) void this.music.play().catch(() => {});
@@ -93,14 +128,20 @@ export class Sfx {
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
     const m = this.vol.muffle;
-    this.master.gain.setTargetAtTime(this.muted ? 0 : 0.9, t, 0.05);
+    this.master.gain.setTargetAtTime(this.muted ? 0 : 0.75, t, 0.05);
     this.sfxBus.gain.setTargetAtTime(this.vol.sfx, t, 0.05);
-    this.musicGain.gain.setTargetAtTime(this.vol.music * 0.55, t, 0.1);
-    this.hp.frequency.setTargetAtTime(40 + m * 420, t, 0.05);
-    this.lp.frequency.setTargetAtTime(16000 - m * 13200, t, 0.05);
-    this.mid.gain.setTargetAtTime(m * 5, t, 0.05);
-    this.dry.gain.setTargetAtTime(1 - m * 0.35, t, 0.05);
-    this.wet.gain.setTargetAtTime(0.04 + m * 0.4, t, 0.05);
+    this.musicGain.gain.setTargetAtTime(this.vol.music * 0.42, t, 0.1);
+    // m = 0: clean hi-fi; m = 1: tinny, far-away ceiling speakers
+    const hp = 30 + m * 520;
+    const lp = 18000 * Math.pow(2600 / 18000, m);
+    this.hp.frequency.setTargetAtTime(hp, t, 0.05);
+    this.hp2.frequency.setTargetAtTime(hp, t, 0.05);
+    this.lp.frequency.setTargetAtTime(lp, t, 0.05);
+    this.lp2.frequency.setTargetAtTime(lp, t, 0.05);
+    this.mid.gain.setTargetAtTime(m * 7, t, 0.05);
+    this.dry.gain.setTargetAtTime(1 - m * 0.55, t, 0.05);
+    this.far.gain.setTargetAtTime(m * 0.7, t, 0.05);
+    this.wet.gain.setTargetAtTime(0.03 + m * 0.6, t, 0.05);
   }
 
   setMuted(m: boolean) {
@@ -113,6 +154,13 @@ export class Sfx {
     if (!this.music) return;
     if (on) void this.music.play().catch(() => {});
     else this.music.pause();
+  }
+
+  /** Slightly faster (and higher) music when time is running out. */
+  setMusicRate(rate: number) {
+    if (!this.music || Math.abs(this.music.playbackRate - rate) < 0.005) return;
+    this.music.preservesPitch = false;
+    this.music.playbackRate = rate;
   }
 
   private tone(freq: number, dur: number, type: OscillatorType = 'sine', vol = 0.4, delay = 0, slideTo?: number) {
@@ -182,6 +230,11 @@ export class Sfx {
     this.noise(0.07, 0.4, 2600, 2.5);
     this.tone(420, 0.07, 'triangle', 0.16, 0, 300);
   }
+  /** Low double thump for the last seconds. */
+  heartbeat() {
+    this.tone(70, 0.14, 'sine', 0.5, 0, 45);
+    this.tone(64, 0.16, 'sine', 0.38, 0.18, 40);
+  }
   tick() {
     this.tone(1400, 0.05, 'square', 0.06);
   }
@@ -220,17 +273,43 @@ export class Sfx {
   announce(text: string) {
     if (!this.announcements || this.muted) return;
     this.chime();
+    const lang = speechLang();
+    setTimeout(() => void this.speak(text, lang), 1500);
+  }
+
+  /** Voices load asynchronously (often empty on the first call). */
+  private voices(): Promise<SpeechSynthesisVoice[]> {
+    const synth = window.speechSynthesis;
+    if (!synth) return Promise.resolve([]);
+    const now = synth.getVoices();
+    if (now.length) return Promise.resolve(now);
+    return new Promise((resolve) => {
+      const done = () => resolve(synth.getVoices());
+      synth.addEventListener('voiceschanged', done, { once: true });
+      setTimeout(done, 2000);
+    });
+  }
+
+  private async speak(text: string, lang: string) {
     try {
       const synth = window.speechSynthesis;
       if (!synth) return;
+      const all = await this.voices();
+      const base = lang.slice(0, 2).toLowerCase();
+      const matching = all.filter((v) => v.lang.replace('_', '-').toLowerCase().startsWith(base));
+      // never let the OS default voice read the text in another language
+      if (!matching.length) return;
+      const exact = matching.filter((v) => v.lang.replace('_', '-').toLowerCase() === lang.toLowerCase());
+      const pool = exact.length ? exact : matching;
+      const voice = pool.find((v) => /google|natural|neural|samantha|daniel/i.test(v.name)) ?? pool[0];
       const u = new SpeechSynthesisUtterance(text);
-      u.lang = speechLang();
-      const voice = synth.getVoices().find((v) => v.lang.toLowerCase().startsWith(u.lang.slice(0, 2).toLowerCase()));
-      if (voice) u.voice = voice;
-      u.rate = 1.0;
+      u.lang = voice.lang;
+      u.voice = voice;
+      u.rate = 0.98;
       u.pitch = 1.05;
-      u.volume = Math.min(1, 0.35 + this.vol.sfx * 0.4);
-      setTimeout(() => synth.speak(u), 1500);
+      u.volume = Math.min(1, 0.3 + this.vol.sfx * 0.4);
+      synth.cancel();
+      synth.speak(u);
     } catch {
       /* speech unavailable: the chime + subtitle still play */
     }

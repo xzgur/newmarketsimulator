@@ -1,6 +1,7 @@
-/** Player settings + campaign progress, persisted in localStorage (best effort). */
+/** Player settings + career save, persisted in localStorage (best effort). */
 import type { Lang } from './i18n';
 import type { MoodId } from './render/moodIds';
+import { newCareer, type Career } from './logic/career';
 
 export type Quality = 'low' | 'medium' | 'high';
 
@@ -19,7 +20,7 @@ export interface Settings {
   quality: Quality;
   /** 1 = off, 2–4 = pixel size */
   pixel: number;
-  /** null = use each shift's own atmosphere */
+  /** null = follow the time of day of each order */
   mood: MoodId | null;
 }
 
@@ -28,9 +29,9 @@ export const DEFAULT_SETTINGS: Settings = {
   sensitivity: 1,
   invertY: false,
   fov: 72,
-  music: 0.55,
-  muffle: 0.6,
-  sfx: 0.8,
+  music: 0.35,
+  muffle: 0.75,
+  sfx: 0.7,
   announcements: true,
   quality: 'high',
   pixel: 1,
@@ -38,7 +39,6 @@ export const DEFAULT_SETTINGS: Settings = {
 };
 
 const KEY = 'orderdash.settings.v1';
-const PKEY = 'orderdash.progress.v1';
 
 function read<T>(key: string): T | null {
   try {
@@ -58,39 +58,28 @@ function write(key: string, value: unknown) {
 }
 
 export function loadSettings(): Settings {
-  const s = { ...DEFAULT_SETTINGS, ...(read<Partial<Settings>>(KEY) ?? {}) };
-  if (!read(KEY)) {
-    const nav = (navigator.language || 'en').slice(0, 2);
-    if (nav === 'tr' || nav === 'es' || nav === 'de') s.lang = nav;
+  // first launch is always English; the player picks another language in the menu
+  const stored = read<Partial<Settings> & { rev?: number }>(KEY) ?? {};
+  if ((stored.rev ?? 1) < 2) {
+    // rev 2: quieter defaults + stronger store-speaker sound
+    delete stored.music;
+    delete stored.muffle;
+    delete stored.sfx;
   }
-  return s;
+  const { rev: _rev, ...rest } = stored;
+  return { ...DEFAULT_SETTINGS, ...rest };
 }
 
 export function saveSettings(s: Settings) {
-  write(KEY, s);
+  write(KEY, { ...s, rev: 2 });
 }
 
-export interface Progress {
-  /** best stars per level number (0 = not cleared) */
-  stars: Record<number, number>;
-  best: Record<number, number>;
+const CKEY = 'orderdash.career.v1';
+
+export function loadCareer(): Career {
+  return { ...newCareer(), ...(read<Partial<Career>>(CKEY) ?? {}) };
 }
 
-export function loadProgress(): Progress {
-  return { stars: {}, best: {}, ...(read<Progress>(PKEY) ?? {}) };
-}
-
-export function saveProgress(p: Progress) {
-  write(PKEY, p);
-}
-
-export function isUnlocked(p: Progress, num: number): boolean {
-  return num === 1 || (p.stars[num - 1] ?? 0) > 0;
-}
-
-export function recordResult(p: Progress, num: number, stars: number, score: number): Progress {
-  const next: Progress = { stars: { ...p.stars }, best: { ...p.best } };
-  next.stars[num] = Math.max(next.stars[num] ?? 0, stars);
-  next.best[num] = Math.max(next.best[num] ?? 0, score);
-  return next;
+export function saveCareer(c: Career) {
+  write(CKEY, c);
 }

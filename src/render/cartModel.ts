@@ -20,6 +20,12 @@ const red = new THREE.MeshStandardMaterial({ color: '#FF5B4F', roughness: 0.45 }
 const blackPlastic = new THREE.MeshStandardMaterial({ color: '#1f2328', roughness: 0.6 });
 const grey = new THREE.MeshStandardMaterial({ color: '#9aa1ab', roughness: 0.5, metalness: 0.3 });
 
+/** Career rank paint job: accent colour for grip + trims; the top rank gets a golden frame. */
+export function paintCart(accent: string, gold: boolean) {
+  red.color.set(accent);
+  chrome.color.set(gold ? '#FFC93C' : '#d9dee5');
+}
+
 /** Thin wire between two points (as a box: cheap, merges well). */
 function wire(a: THREE.Vector3, b: THREE.Vector3, t = 0.007): THREE.BufferGeometry {
   const len = a.distanceTo(b);
@@ -271,7 +277,7 @@ export class ShoppingCart {
     root.add(knot);
     const items = new THREE.Group();
     root.add(items);
-    const badge = new THREE.Sprite(new THREE.SpriteMaterial({ map: badgeTexture(i + 1, BAG_COLORS[i]), depthWrite: false, transparent: true }));
+    const badge = new THREE.Sprite(new THREE.SpriteMaterial({ map: badgeTexture(i + 1, BAG_COLORS[i]), transparent: true, alphaTest: 0.5 }));
     badge.scale.set(0.11, 0.11, 1);
     badge.position.set(0.25, h * 0.55, 0);
     root.add(badge);

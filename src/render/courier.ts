@@ -110,7 +110,7 @@ export class CourierView {
     this.group.add(this.scooter, this.rider);
     this.group.visible = false;
     toonify(this.group);
-    this.bubble = new THREE.Sprite(new THREE.SpriteMaterial({ transparent: true, depthWrite: false }));
+    this.bubble = new THREE.Sprite(new THREE.SpriteMaterial({ transparent: true, alphaTest: 0.5 }));
     this.bubble.scale.set(1.3, 0.49, 1);
     this.bubble.position.y = 2.3;
     this.bubble.visible = false;
@@ -185,6 +185,9 @@ export class CourierView {
   }
 
   /** Bags (already in world space) fly into the courier's hands. */
+  /** A callback that runs after a delay in game time (pauses with the game). */
+  private pending: { t: number; fn: () => void } | null = null;
+
   receive(bags: THREE.Object3D[], onDone: () => void) {
     this.state = 'receiving';
     this.t = 0;
@@ -213,7 +216,7 @@ export class CourierView {
         });
         this.receiveAnim = undefined;
         this.ch.play('Cheer', 0.2, true);
-        setTimeout(onDone, 900);
+        this.pending = { t: 0.9, fn: onDone };
       }
     };
   }
@@ -249,6 +252,14 @@ export class CourierView {
   update(dt: number) {
     if (!this.group.visible) return;
     this.t += dt;
+    if (this.pending) {
+      this.pending.t -= dt;
+      if (this.pending.t <= 0) {
+        const fn = this.pending.fn;
+        this.pending = null;
+        fn();
+      }
+    }
     this.ch.mixer.update(dt);
     if (this.bubbleT > 0) {
       this.bubbleT -= dt;

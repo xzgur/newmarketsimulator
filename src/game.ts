@@ -1,15 +1,15 @@
-/** Game orchestrator: menus, shifts, first-person loop, interaction and presentation. */
+/** Game orchestrator: menus, work days, first-person loop, interaction and presentation. */
 import * as THREE from 'three';
 import { buildLayout, type Display, type StoreLayout } from './data/layout';
-import { LEVELS, type LevelDef } from './data/order';
+import type { LevelDef } from './data/order';
 import { getProduct, formatPrice } from './data/products';
-import { createPlayer, look, PLAYER, speedOf, stepPlayer, type PlayerState } from './logic/player';
+import { createPlayer, look, PLAYER, speedOf, stepPlayer, wrapAngle, type PlayerState } from './logic/player';
 import { GameFlow } from './logic/gameFlow';
 import { OrderSession } from './logic/order';
 import { loadAssets } from './render/assets';
 import { StoreView } from './render/store';
 import { OutsideView } from './render/outside';
-import { ShoppingCart } from './render/cartModel';
+import { paintCart, ShoppingCart } from './render/cartModel';
 import { Hands } from './render/hands';
 import { People } from './render/people';
 import { CourierView } from './render/courier';
@@ -18,11 +18,28 @@ import { Post } from './render/post';
 import { Lighting, MOODS, type MoodId } from './render/mood';
 import { createProductMesh } from './render/productMeshes';
 import { renderThumbnails } from './render/thumbnails';
-import { Hud, esc, sectionLabel } from './ui/hud';
+import { Hud, esc, money, sectionLabel } from './ui/hud';
 import { Input } from './input';
 import { Sfx } from './audio';
 import { productName, setLang, t } from './i18n';
-import { loadProgress, loadSettings, recordResult, saveProgress, saveSettings, type Progress, type Settings } from './settings';
+import { loadCareer, loadSettings, saveCareer, saveSettings, type Settings } from './settings';
+import {
+  applyResult,
+  buyUpgrade,
+  finishDay,
+  newRuleOn,
+  packOrder,
+  planDay,
+  rankIndex,
+  RANKS,
+  scoreOrder,
+  speedMultiplier,
+  upgradeLevel,
+  type Career,
+  type DayPlan,
+  type OrderResult,
+  type UpgradeId,
+} from './logic/career';
 
 interface Flyer {
   obj: THREE.Object3D;
@@ -65,12 +82,14 @@ export class Game {
   private player!: PlayerState;
   private session!: OrderSession;
   private flow!: GameFlow;
-  private level: LevelDef = LEVELS[0];
+  private career: Career = loadCareer();
+  private plan: DayPlan = planDay(this.career.day, this.career);
+  private results: OrderResult[] = [];
+  private level: LevelDef = this.plan.orders[0];
   private hud: Hud;
   private input: Input;
   private sfx = new Sfx();
   private settings: Settings = loadSettings();
-  private progress: Progress = loadProgress();
   private flyers: Flyer[] = [];
   private thrown: Thrown[] = [];
   private held: THREE.Object3D | null = null;
@@ -88,6 +107,9 @@ export class Game {
   private score = 0;
   private paTimer = 40;
   private paIndex = 0;
+  private paNext: string | null = null;
+  private warned = 0;
+  private handoverT = 0;
   private hintTimer = 0;
   private titleT = 0;
   private wantLock = false;
@@ -112,11 +134,12 @@ export class Game {
     this.hud = new Hud(
       container,
       {
-        play: (n) => this.play(n),
-        restart: () => this.play(this.level.num),
+        play: () => this.startDay(),
+        buy: (id) => this.buy(id),
+        restart: () => this.startOrder(this.level.index),
         resume: () => this.setPaused(false),
         toMenu: () => this.toMenu(),
-        next: () => this.play(Math.min(LEVELS.length, this.level.num + 1)),
+        next: () => this.onNext(),
         accept: () => this.accept(),
         complete: () => this.completeOrder(),
         togglePhone: () => this.hud.setPhoneOpen(!this.hud.phoneOpen),
@@ -124,7 +147,7 @@ export class Game {
         click: () => this.sfx.click(),
       },
       this.settings,
-      this.progress,
+      this.career,
     );
     this.hud.showScreen('loading');
 
@@ -144,6 +167,9 @@ export class Game {
       this.sfx.unlock();
       this.sfx.setMusic(true);
     };
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'Enter' && (this.hud.currentScreen === 'review' || this.hud.currentScreen === 'dayEnd')) this.onNext();
+    });
     window.addEventListener('pointerdown', unlock, { once: true });
     window.addEventListener('keydown', unlock, { once: true });
     this.resize();
@@ -177,7 +203,7 @@ export class Game {
       this.lighting = new Lighting(this.renderer, this.scene, this.settings.quality !== 'low');
       this.outside = new OutsideView(this.layout.bounds.maxZ);
       this.scene.add(this.outside.group);
-      this.buildWorld(LEVELS[0]);
+      this.buildWorld(this.level);
       this.hud.setLoading(0.88, 'menu.loadingPeople');
       await nextFrame();
       this.hud.setThumbnails(renderThumbnails(this.renderer));
@@ -215,6 +241,7 @@ export class Game {
     this.particles = new Particles();
     this.world.add(this.store.group, this.people.group, this.courier.group, this.particles.group);
 
+    this.paintCart();
     this.cart = new ShoppingCart(level.order.bagCount);
     this.cart.group.position.set(0, 0, PLAYER.cartOffset);
     this.hands = new Hands();
@@ -231,9 +258,16 @@ export class Game {
     this.bestCombo = 0;
     this.score = 0;
     this.lastTick = -1;
-    this.paTimer = 35;
+    this.paTimer = 999;
+    this.warned = 0;
+    this.handoverT = 0;
     this.builtLang = this.settings.lang;
     if (this.lighting) this.lighting.placePoints(this.store, this.outside);
+  }
+
+  private paintCart() {
+    const i = rankIndex(this.career);
+    paintCart(RANKS[i].paint, i === RANKS.length - 1);
   }
 
   private moodId(): MoodId {
@@ -289,29 +323,81 @@ export class Game {
   }
 
   // ---------------------------------------------------------------- flow
-  private play(num: number) {
+  private notes(): string[] {
+    return [1, 2, 3, 4, 5, 6, 7, 8].map((i) => t(`note.${i}`));
+  }
+
+  /** A new work day with freshly generated orders. */
+  private startDay(day = this.career.day) {
+    this.plan = planDay(day, this.career, this.notes());
+    this.results = [];
+    this.startOrder(0);
+  }
+
+  private startOrder(index: number) {
     this.sfx.unlock();
     this.sfx.setMusic(true);
-    const level = LEVELS.find((l) => l.num === num) ?? LEVELS[0];
+    this.sfx.setMusicRate(1);
+    const level = this.plan.orders[index];
+    this.results.length = index;
     this.sfx.ringStop();
     this.sfx.setEngine(0);
     this.buildWorld(level);
     void this.applyMood();
+    this.hud.setCareer(this.career);
     this.hud.setPhoneOpen(false);
     this.flow.start();
     this.hud.showScreen(null);
     this.hud.setPlaying(true);
     this.hud.setPhoneScreen('incoming');
-    this.hud.showHint(true);
-    this.hintTimer = 25;
-    const newRule = level.num === 3 ? t('rule.chem') : level.num === 4 ? t('rule.fragile') : null;
-    this.hud.shiftBanner(level, newRule);
+    if (index === 0 && level.day <= 2) {
+      this.hud.showHint(true);
+      this.hintTimer = 25;
+    }
+    const rule = index === 0 ? newRuleOn(level.day) : null;
+    this.hud.orderBanner(level, this.plan.goal, rule ? t(`rule.${rule}`) : null);
     this.sfx.ringStart();
     this.input.enabled = true;
     this.wantLock = true;
     this.input.requestLock();
     this.input.clear();
     this.hud.toast(t('t.ringing'), 'info', 4000);
+  }
+
+  /** "Next" on the review / end-of-day screens. */
+  private onNext() {
+    const scr = this.hud.currentScreen;
+    if (scr === 'review') {
+      if (this.level.index + 1 < this.plan.orders.length) this.startOrder(this.level.index + 1);
+      else this.endDay();
+    } else if (scr === 'dayEnd') this.startDay();
+  }
+
+  private endDay() {
+    const delivered = this.results.filter((r) => r.delivered).length;
+    const { career, passed } = finishDay(this.career, this.plan, delivered);
+    this.career = career;
+    saveCareer(career);
+    this.hud.setCareer(career);
+    if (passed) {
+      this.sfx.win();
+      this.post.pulse('#FFD23F', 0.3);
+    } else this.sfx.lose();
+    this.hud.showDayEnd(this.plan, this.results, passed);
+    this.hud.showScreen('dayEnd');
+  }
+
+  private buy(id: UpgradeId) {
+    const next = buyUpgrade(this.career, id);
+    if (!next) {
+      this.sfx.error();
+      return;
+    }
+    this.career = next;
+    saveCareer(next);
+    this.sfx.combo(3);
+    this.hud.setCareer(next);
+    this.hud.toast(t('shop.bought', { name: t(`up.${id}.name`) }), 'ok', 2000);
   }
 
   private toMenu() {
@@ -325,7 +411,7 @@ export class Game {
     this.buildWorld(this.level);
     void this.applyMood();
     this.hud.setPlaying(false);
-    this.hud.setProgress(this.progress);
+    this.hud.setCareer(this.career);
     this.hud.showScreen('menu');
   }
 
@@ -348,6 +434,10 @@ export class Game {
     this.hud.setPhoneScreen('picking');
     this.hud.setPhoneOpen(true);
     this.hud.toast(t('t.accepted'), 'ok');
+    // store PA: opening announcement on the first order, closing on the last
+    const last = this.level.index === this.level.total - 1;
+    this.paNext = this.level.index === 0 ? 'pa.open' : last ? 'pa.closing' : null;
+    this.paTimer = this.paNext ? 4 : 14;
     if (this.level.tutorial) setTimeout(() => this.hud.toast(t('tut.findAisle'), 'info', 5000), 2500);
     setTimeout(() => {
       if (this.flow.phase === 'playing' && this.hud.phoneOpen) this.hud.setPhoneOpen(false);
@@ -511,7 +601,7 @@ export class Game {
     this.post.pulse('#4FBF5A', 0.25);
     this.store.deliveryActive = true;
     this.hud.setPhoneScreen('courier');
-    this.hud.courierEta = 9;
+    this.hud.courierEta = upgradeLevel(this.career, 'courier') ? 4.5 : 9;
     this.hud.toast(t('t.orderReady', { name: this.level.order.courier }), 'ok', 3500);
     this.courier.arrive(() => {
       this.flow.courierArrived();
@@ -538,26 +628,15 @@ export class Game {
       this.hud.setPhoneScreen('delivered');
       this.hud.toast(t('t.taken'), 'ok');
       this.courier.leave(() => this.win());
-      setTimeout(() => {
-        if (this.flow.phase === 'handover') this.win();
-      }, 2600);
+      // don't wait for the whole ride out: the review pops up shortly after (game time)
+      this.handoverT = 2.4;
     });
   }
 
   private win() {
     if (!this.flow.handoverDone()) return;
     this.sfx.setEngine(0);
-    this.score = Math.max(0, this.score + Math.round(this.flow.timeLeft * 5));
-    const stars = this.flow.stars(this.session.mistakes);
-    this.progress = recordResult(this.progress, this.level.num, stars, this.score);
-    saveProgress(this.progress);
-    this.hud.setProgress(this.progress);
-    this.hud.showWon({ timeLeft: this.flow.timeLeft, stars, mistakes: this.session.mistakes, bestCombo: this.bestCombo, score: this.score, last: this.level.num === LEVELS.length });
-    this.hud.showScreen('won');
-    this.hud.setPlaying(false);
-    this.input.enabled = false;
-    this.wantLock = false;
-    this.input.releaseLock();
+    this.finishOrder(true);
   }
 
   private lose() {
@@ -566,8 +645,25 @@ export class Game {
     this.sfx.setEngine(0);
     this.sfx.setCartSpeed(0);
     this.hud.setPhoneScreen('failed');
-    this.hud.showLost(this.session.totalBagged(), this.session.totalRequired(), this.session.closed);
-    this.hud.showScreen('lost');
+    this.finishOrder(false);
+  }
+
+  /** Scores the order, pays out and shows the customer's review. */
+  private finishOrder(delivered: boolean) {
+    this.sfx.setMusicRate(1);
+    const r = scoreOrder(this.level, this.career, delivered, this.flow.timeLeft, this.session.mistakes);
+    this.results[this.level.index] = r;
+    const { career, promoted } = applyResult(this.career, r);
+    this.career = career;
+    saveCareer(career);
+    this.hud.setCareer(career);
+    this.hud.showReview(this.level, r, this.results, promoted);
+    this.hud.showScreen('review');
+    if (promoted) {
+      this.paintCart();
+      this.sfx.win();
+      this.post.pulse('#FFD23F', 0.4);
+    } else if (delivered && r.stars >= 4) setTimeout(() => this.sfx.combo(r.stars), 500);
     this.hud.setPlaying(false);
     this.input.enabled = false;
     this.wantLock = false;
@@ -637,7 +733,7 @@ export class Game {
       look(this.player, l.yaw, l.pitch);
       const mv = this.input.move();
       if (flow.phase === 'handover') mv.forward = mv.strafe = mv.turn = 0;
-      const hit = stepPlayer(this.player, mv, dt, this.layout.colliders, this.people.blockers());
+      const hit = stepPlayer(this.player, mv, dt, this.layout.colliders, this.people.blockers(), speedMultiplier(this.career));
       this.bumpCooldown -= dt;
       const sp = speedOf(this.player);
       if (hit && this.bumpCooldown <= 0 && sp > 1.4) {
@@ -652,27 +748,31 @@ export class Game {
     this.sfx.setCartSpeed(flow.paused || !this.inGame() ? 0 : speed / PLAYER.sprint);
 
     if (flow.tick(dt)) this.lose();
-    if (flow.timerRunning && flow.timeLeft <= 10) {
-      const s = Math.ceil(flow.timeLeft);
-      if (s !== this.lastTick) {
-        this.lastTick = s;
-        this.sfx.tick();
-      }
-    }
+    this.updateUrgency();
 
     if (!flow.paused) {
       this.people.update(dt, this.player);
-      this.courier.update(dt);
+      const fastCourier = upgradeLevel(this.career, 'courier') > 0 && (this.courier.state === 'ridingIn' || this.courier.state === 'walkingIn');
+      this.courier.update(fastCourier ? dt * 2 : dt);
       this.store.update(dt);
       this.outside.update(dt);
       this.particles.update(dt);
       this.updateFlyers(dt);
       this.cart.update(dt, speed);
+      if (this.handoverT > 0) {
+        this.handoverT -= dt;
+        if (this.handoverT <= 0) this.win();
+      }
       this.paTimer -= dt;
       if (this.paTimer <= 0 && flow.phase === 'playing') {
-        this.paTimer = 55 + Math.random() * 30;
-        this.paIndex = (this.paIndex % 5) + 1;
-        const text = t(`pa.${this.paIndex}`);
+        this.paTimer = 40 + Math.random() * 25;
+        let key = this.paNext;
+        this.paNext = null;
+        if (!key) {
+          this.paIndex = (this.paIndex % 8) + 1;
+          key = `pa.${this.paIndex}`;
+        }
+        const text = t(key);
         this.sfx.announce(text);
         this.hud.paSubtitle(text);
       }
@@ -685,6 +785,69 @@ export class Game {
     this.updateRig(dt, speed);
     this.updateTarget();
     this.updateHud(dt);
+    this.updateRadar();
+  }
+
+  /** Low-time drama: red pulsing edges, shaking timer, ticking, faster music. */
+  private updateUrgency() {
+    const flow = this.flow;
+    const left = flow.timeLeft;
+    const live = flow.timerRunning;
+    const u = live && left <= 30 ? Math.min(1, (30 - left) / 30) * 0.7 + 0.3 : 0;
+    this.hud.setUrgency(u);
+    this.sfx.setMusicRate(live && left <= 30 ? 1 + (left <= 10 ? 0.12 : 0.06) : 1);
+    if (!live) return;
+    if (left <= 30 && this.warned < 1) {
+      this.warned = 1;
+      this.hud.toast(t('hud.hurry'), 'err', 2600);
+      this.sfx.error();
+    }
+    if (left <= 10 && this.warned < 2) {
+      this.warned = 2;
+      this.hud.toast(t('hud.lastTen'), 'err', 2600);
+    }
+    if (left <= 15) {
+      const s = Math.ceil(left);
+      if (s !== this.lastTick) {
+        this.lastTick = s;
+        this.sfx.tick();
+        if (left <= 10) {
+          this.sfx.heartbeat();
+          this.shake = Math.max(this.shake, 0.06);
+        }
+      }
+    }
+  }
+
+  /** Shelf Radar upgrade: arrow to the nearest shelf holding the next missing item. */
+  private updateRadar() {
+    const s = this.session;
+    if (!upgradeLevel(this.career, 'radar') || this.flow.phase !== 'playing' || this.flow.paused || s.tray.length) {
+      this.hud.setRadar(null);
+      return;
+    }
+    const next = s.progress().find((l) => l.bagged < l.qty);
+    if (!next) {
+      this.hud.setRadar(null);
+      return;
+    }
+    const p = this.player;
+    let best: Display | null = null;
+    let bd = Infinity;
+    for (const d of this.layout.displays) {
+      if (d.productId !== next.productId || this.store.stockOf(d.id) <= 0) continue;
+      const dist = Math.hypot(d.stand.x - p.x, d.stand.z - p.z);
+      if (dist < bd) {
+        bd = dist;
+        best = d;
+      }
+    }
+    if (!best) {
+      this.hud.setRadar(null);
+      return;
+    }
+    const rel = wrapAngle(Math.atan2(best.x - p.x, best.z - p.z) - p.yaw);
+    this.hud.setRadar(-rel, Math.hypot(best.x - p.x, best.z - p.z));
   }
 
   private updateRig(dt: number, speed: number) {
@@ -793,6 +956,7 @@ export class Game {
     const s = this.session;
     this.hud.setTimer(flow.timeLeft, flow.timerRunning);
     if (this.hud.courierEta > 0 && flow.phase === 'courierArriving') this.hud.courierEta = Math.max(0.5, this.hud.courierEta - dt);
+    this.hud.setCash(money(this.career.cash));
     this.hud.updatePhone(s, s.tray[0] ?? null);
     this.hud.setHeld(flow.phase === 'playing' ? (s.tray[0] ?? null) : null, s);
     const d = new Date();
@@ -866,7 +1030,20 @@ export class Game {
         return self.flow?.phase;
       },
       get level() {
-        return self.level.num;
+        return { day: self.level.day, index: self.level.index, total: self.level.total, express: self.level.express };
+      },
+      get order() {
+        return self.level.order;
+      },
+      get screen() {
+        return self.hud.currentScreen;
+      },
+      /** Bag index for each item of the current order (lines expanded by qty). */
+      get packPlan() {
+        return packOrder(self.level.order);
+      },
+      get career() {
+        return { ...self.career };
       },
       get timeLeft() {
         return self.flow.timeLeft;
@@ -888,13 +1065,27 @@ export class Game {
       get score() {
         return self.score;
       },
-      get progress() {
-        return self.progress;
-      },
       layout: this.layout,
-      levels: LEVELS,
-      play(n: number) {
-        self.play(n);
+      startDay(day?: number) {
+        self.startDay(day);
+      },
+      startOrder(i: number) {
+        self.startOrder(i);
+      },
+      next() {
+        self.onNext();
+      },
+      buy(id: UpgradeId) {
+        self.buy(id);
+      },
+      giveStars(n: number) {
+        self.career = { ...self.career, stars: self.career.stars + n };
+        self.hud.setCareer(self.career);
+        self.paintCart();
+      },
+      giveCash(v: number) {
+        self.career = { ...self.career, cash: self.career.cash + v };
+        self.hud.setCareer(self.career);
       },
       teleport(x: number, z: number, yaw: number, pitch = -0.1) {
         Object.assign(self.player, { x, z, yaw, pitch, vx: 0, vz: 0 });
@@ -935,6 +1126,12 @@ export class Game {
       },
       press(a: string) {
         self.input.push(a as never);
+      },
+      popup(text: string, cls = 'combo') {
+        self.hud.popup(text, cls);
+      },
+      npcSay(text: string) {
+        self.people.sayAll(text);
       },
       skipCourier() {
         self.courier.skipArrival();

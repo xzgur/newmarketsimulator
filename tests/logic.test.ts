@@ -1,6 +1,32 @@
 import { describe, expect, it } from 'vitest';
 import { OrderSession, bagConflict } from '../src/logic/order';
-import { DEMO_ORDER, type OrderDef } from '../src/data/order';
+import type { OrderDef } from '../src/data/order';
+
+/** The classic 10-item order (#1042) used by several tests. */
+const DEMO_ORDER: OrderDef = {
+  id: '#1042',
+  customer: 'Ayşe K.',
+  address: '17 Moda Street',
+  note: '',
+  distanceKm: 1.8,
+  courier: 'Mert',
+  timeLimit: 300,
+  bagCount: 3,
+  bagCapacity: 5,
+  trayCapacity: 1,
+  rules: { chemical: true, fragile: true },
+  lines: [
+    { productId: 'milk_full', qty: 1 },
+    { productId: 'eggs_10', qty: 1 },
+    { productId: 'cheese_white', qty: 1 },
+    { productId: 'bread_white', qty: 1 },
+    { productId: 'tomato', qty: 1 },
+    { productId: 'banana', qty: 1 },
+    { productId: 'water_5l', qty: 1 },
+    { productId: 'chips_potato', qty: 2 },
+    { productId: 'dish_soap', qty: 1 },
+  ],
+};
 import { getProduct, PRODUCT_BY_ID } from '../src/data/products';
 import { buildLayout, navPath } from '../src/data/layout';
 import { resolveCircle, circleIntersectsBox } from '../src/logic/collision';
@@ -274,36 +300,99 @@ describe('GameFlow', () => {
   });
 });
 
-import { LEVELS } from '../src/data/order';
 import { missingKeys, PRODUCT_NAMES, SECTION_NAMES } from '../src/i18n';
+import { applyResult, buyUpgrade, finishDay, newCareer, ordersInDay, packOrder, planDay, rankIndex, rankProgress, RANKS, scoreOrder, type Career } from '../src/logic/career';
 
-/** Backtracking packer: can every item of the order be bagged under its rules? */
-function solvable(order: OrderDef): boolean {
-  const items = order.lines.flatMap((l) => Array.from({ length: l.qty }, () => getProduct(l.productId)));
-  const bags: ReturnType<typeof getProduct>[][] = Array.from({ length: order.bagCount }, () => []);
-  const go = (i: number): boolean => {
-    if (i === items.length) return true;
-    for (const bag of bags) {
-      if (bag.length >= order.bagCapacity || bagConflict(items[i], bag, order.rules)) continue;
-      bag.push(items[i]);
-      if (go(i + 1)) return true;
-      bag.pop();
+describe('career', () => {
+  const layout = buildLayout();
+  const stocked = new Set(layout.displays.map((d) => d.productId));
+
+  it('every generated order of the first 30 days is stocked and packable', () => {
+    for (const bags of [0, 2]) {
+      const c: Career = { ...newCareer(), upgrades: { bags } };
+      for (let day = 1; day <= 30; day++) {
+        const plan = planDay(day, c);
+        expect(plan.orders.length).toBe(ordersInDay(day));
+        expect(plan.goal).toBeLessThanOrEqual(plan.orders.length);
+        for (const lv of plan.orders) {
+          const o = lv.order;
+          expect(o.bagCount).toBeGreaterThanOrEqual(1);
+          expect(o.bagCount).toBeLessThanOrEqual(3);
+          for (const l of o.lines) expect(stocked.has(l.productId)).toBe(true);
+          expect(packOrder(o)).not.toBeNull();
+          // the packing is real: replay it through the session the player uses
+          const s = new OrderSession(o);
+          s.bags.forEach((_, i) => s.openBag(i));
+          const plan2 = packOrder(o)!;
+          o.lines.flatMap((l) => Array(l.qty).fill(l.productId) as string[]).forEach((pid, i) => {
+            expect(s.pick(pid).ok).toBe(true);
+            expect(s.place(0, plan2[i]).ok).toBe(true);
+          });
+          expect(s.close().ok).toBe(true);
+        }
+      }
     }
-    return false;
-  };
-  return go(0);
-}
-
-describe('campaign', () => {
-  it.each(LEVELS.map((l) => [l.num, l] as const))('shift %i can be packed', (_n, level) => {
-    expect(solvable(level.order)).toBe(true);
-    for (const line of level.order.lines) expect(line.productId in PRODUCT_BY_ID).toBe(true);
   });
 
-  it('shifts are numbered 1..n and get longer', () => {
-    LEVELS.forEach((l, i) => expect(l.num).toBe(i + 1));
-    const counts = LEVELS.map((l) => l.order.lines.reduce((a, b) => a + b.qty, 0));
-    expect(counts[counts.length - 1]).toBeGreaterThan(counts[0]);
+  it('days get harder: more items, rules switch on, the same day replays identically', () => {
+    const c = newCareer();
+    const items = (d: number) => planDay(d, c).orders.reduce((a, o) => a + o.order.lines.reduce((x, l) => x + l.qty, 0), 0);
+    expect(items(6)).toBeGreaterThan(items(1));
+    expect(planDay(1, c).orders[0].order.rules).toEqual({ chemical: false, fragile: false });
+    expect(planDay(3, c).orders[0].order.rules).toEqual({ chemical: true, fragile: true });
+    expect(planDay(4, c).orders.filter((o) => o.express).length).toBe(1);
+    expect(JSON.stringify(planDay(5, c))).toBe(JSON.stringify(planDay(5, c)));
+  });
+
+  it('pays more for faster, cleaner deliveries and nothing for cancelled ones', () => {
+    const c = newCareer();
+    const lv = planDay(2, c).orders[0];
+    const fast = scoreOrder(lv, c, true, lv.order.timeLimit * 0.6, 0);
+    const slow = scoreOrder(lv, c, true, lv.order.timeLimit * 0.04, 0);
+    const sloppy = scoreOrder(lv, c, true, lv.order.timeLimit * 0.6, 4);
+    expect(fast.stars).toBe(5);
+    expect(slow.stars).toBe(1);
+    expect(sloppy.stars).toBe(3);
+    expect(fast.total).toBeGreaterThan(slow.total);
+    expect(scoreOrder(lv, c, false, 0, 0)).toMatchObject({ stars: 1, total: 0 });
+    const smiley = scoreOrder(lv, { ...c, upgrades: { smile: 2 } }, true, lv.order.timeLimit * 0.6, 0);
+    expect(smiley.tip).toBeGreaterThan(fast.tip);
+  });
+
+  it('upgrades cost cash, stack up to their max, and days advance only when the goal is met', () => {
+    let c: Career = { ...newCareer(), cash: 30 };
+    expect(buyUpgrade(c, 'bags')).toBeNull();
+    c = buyUpgrade(c, 'wheels')!;
+    expect(c.cash).toBe(5);
+    expect(c.upgrades.wheels).toBe(1);
+    c = { ...c, cash: 1000 };
+    c = buyUpgrade(buyUpgrade(c, 'radar')!, 'courier')!;
+    expect(buyUpgrade(c, 'radar')).toBeNull();
+    const plan = planDay(1, c);
+    const r = scoreOrder(plan.orders[0], c, true, 100, 0);
+    c = applyResult(c, r).career;
+    expect(c.delivered).toBe(1);
+    expect(finishDay(c, plan, plan.goal - 1)).toMatchObject({ passed: false, career: { day: 1 } });
+    expect(finishDay(c, plan, plan.goal)).toMatchObject({ passed: true, career: { day: 2 } });
+  });
+});
+
+describe('ranks', () => {
+  it('review stars climb the ladder and each promotion pays its bonus once', () => {
+    const c = newCareer();
+    const lv = planDay(1, c).orders[0];
+    const five = scoreOrder(lv, c, true, lv.order.timeLimit, 0);
+    expect(five.stars).toBe(5);
+    let cur: Career = { ...c, stars: 10 };
+    const { career, promoted } = applyResult(cur, five);
+    expect(promoted?.id).toBe('picker');
+    expect(career.cash).toBeCloseTo(five.total + RANKS[1].bonus, 2);
+    expect(applyResult(career, five).promoted).toBeNull();
+    // cancelled orders never count towards the rank
+    cur = applyResult({ ...c, stars: 11 }, scoreOrder(lv, c, false, 0, 0)).career;
+    expect(rankIndex(cur)).toBe(0);
+    expect(rankProgress({ ...c, stars: 500 })).toMatchObject({ next: null, k: 1 });
+    expect(rankIndex({ ...c, stars: 200 })).toBe(RANKS.length - 1);
   });
 });
 

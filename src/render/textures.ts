@@ -410,11 +410,13 @@ export function aisleSignTexture(name: string, color: string, aisle: number, ico
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
   const ty = (H - lip) / 2 + size * 0.1;
+  // thin outline + soft drop: thick strokes clog the letter counters and turn to mush at a distance
+  (ctx as CanvasRenderingContext2D & { letterSpacing?: string }).letterSpacing = `${Math.round(size * 0.03)}px`;
   ctx.lineJoin = 'round';
-  ctx.lineWidth = Math.max(10, size * 0.16);
+  ctx.lineWidth = Math.max(4, size * 0.06);
   ctx.strokeStyle = INK;
-  ctx.fillStyle = INK;
-  ctx.fillText(text, x + 4, ty + 9);
+  ctx.fillStyle = 'rgba(27,23,48,0.55)';
+  ctx.fillText(text, x + 2, ty + 6);
   ctx.strokeText(text, x, ty);
   ctx.fillStyle = '#FFF4DC';
   ctx.fillText(text, x, ty);

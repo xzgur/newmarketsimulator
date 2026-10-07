@@ -1,24 +1,39 @@
 # Order Dash
 
-A first-person grocery-picking game built with Three.js, Vite and TypeScript, in a cel-shaded, ink-outlined style.
+A first-person grocery-picking career game built with Three.js, Vite and TypeScript, in a cel-shaded, ink-outlined style.
 
 You're the newest picker at the Corner Market. Orders arrive on the **Order Dash** app clipped to your cart. Accept one and the clock starts. Push a real shopping cart through a busy store, grab products off the shelves, pack them into the open bags (keep chemicals away from food and eggs away from heavy bottles), then close the order and hand the bags to the courier at the door.
 
-## Campaign
+## Career
 
-| # | Shift | Bags | Rules | Time |
-|---|---|---|---|---|
-| 1 | First Shift | 1 × 5 | — | 3:00 |
-| 2 | Breakfast Club | 2 × 4 | — | 3:30 |
-| 3 | Spring Cleaning | 2 × 4 | chemicals ≠ food | 4:00 |
-| 4 | Picnic Day (sunset) | 2 × 5 | + fragile ≠ heavy | 4:00 |
-| 5 | Rush Hour (sunset, crowded) | 3 × 4 | both | 5:00 |
-| 6 | Night Shift | 3 × 5 | both | 5:00 |
+The game is an endless series of **work days**:
 
-- Each shift awards 1–3 stars based on time left and mistakes.
-- Clearing a shift unlocks the next one.
-- Progress and settings are saved in `localStorage`.
-- The unit tests prove that every shift can be packed under its own rules.
+- **Orders:** each day brings 3–6 generated orders. Every day is seeded, so retrying it brings the same orders.
+- **Daily goal:** deliver all but one of the day's orders. Hit it and the next, busier day unlocks. Miss it and you replay the day, but you keep your earnings.
+- **Review and pay:** after every order the customer leaves a 1–5 ★ review. You earn the order pay, plus a speed bonus and a tip that depend on how fast and clean you were. A timed-out order is cancelled, earns a 1 ★ review and pays nothing.
+- **Difficulty:**
+  - Orders grow from 3 to 10 items.
+  - Day 2 introduces the chemicals rule, and day 3 the eggs/heavy rule.
+  - From day 3, one order per day is ⚡ **Express**: less time, 1.5× pay, double tip.
+  - The time of day moves from day to sunset to night as the day goes on.
+- **Long-term goal, the rank ladder:** every review star from a delivered order counts toward your rank: Trainee → Picker (12 ★) → Pro Picker (35 ★) → Shift Lead (70 ★) → Store Manager (120 ★) → Legend (200 ★). Each promotion pays a cash bonus and repaints your cart. Reaching Legend unlocks the **Golden Cart**.
+- **Upgrades** (bought with your cash):
+
+  | Upgrade | Effect |
+  |---|---|
+  | Turbo Wheels | Faster cart |
+  | Overtime | More time per order |
+  | Shelf Radar | An arrow points to the next item |
+  | Bigger Bags | Each bag holds more items |
+  | Express Courier | The courier arrives faster |
+  | Smile Training | Bigger tips |
+
+- **Saved progress:** day, cash, store rating and upgrades are saved in `localStorage`.
+- **Tests:** the unit tests generate 30 days of orders, with and without upgrades, and prove that every one can be packed under its rules.
+
+**When time runs low:** under 30 s the screen edges pulse red, the timer shakes and the music speeds up. In the last 10 s there's also a heartbeat.
+
+**Store PA:** opens the day, announces closing time on the last order, and plays regular in-store announcements.
 
 ## Run
 
@@ -55,7 +70,7 @@ URL overrides: `?q=low|medium|high`, `?mood=day|sunset|night`.
 
 Settings are on the main menu and in the pause menu:
 
-- **Language:** English, Türkçe, Español, Deutsch.
+- **Language:** English (always used on first launch), Türkçe, Español, Deutsch.
 - **Mouse:** sensitivity, invert Y, field of view.
 - **Audio:** music volume, "store speaker" muffle amount, SFX volume, PA announcements on/off.
 - **Graphics:** quality (high / medium / low), pixel size (1 = crisp toon, 2–4 = "3D pixel" look), time of day.
@@ -65,13 +80,13 @@ Settings are on the main menu and in the pause menu:
 ```
 src/
   main.ts            entry: WebGL2 check
-  game.ts            orchestrator: menus, levels, loop, interaction, debug hooks
+  game.ts            orchestrator: menus, days, loop, interaction, debug hooks
   i18n.ts            EN/TR/ES/DE dictionaries, product + section names
-  settings.ts        persisted settings + campaign progress
+  settings.ts        persisted settings + career save
   audio.ts           WebAudio SFX, store-speaker music chain, PA announcements
   input.ts           keyboard / mouse / pointer lock
-  data/              products, level definitions, store layout + nav graph
-  logic/             pure game logic (order/bag rules, player physics, collision, flow)
+  data/              products, order types, store layout + nav graph
+  logic/             pure game logic (career + order generation, bag rules, player physics, collision, flow)
   render/
     toon.ts          MeshToonMaterial conversion (4-step ramp)
     post.ts          ToonScenePass (depth-based ink outlines, pixel mode) → bloom → grade → SMAA
@@ -81,7 +96,7 @@ src/
     courier.ts       scooter courier
     hands.ts         first-person cartoon hands
     mood.ts          day / sunset / night lighting presets
-  ui/hud.ts          menus, HUD, Order Dash phone app
+  ui/hud.ts          menus, shop, reviews, HUD, Order Dash phone app
 tests/               vitest unit tests
 scripts/playtest.mjs Playwright end-to-end playtest
 ```

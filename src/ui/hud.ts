@@ -1,20 +1,23 @@
 /**
- * DOM overlay: main menu, shift select, settings, how-to, pause, results;
+ * DOM overlay: main menu, upgrade shop, settings, how-to, pause, order review,
+ * end of day;
  * in-game HUD (timer, objective, crosshair, hover / held cards, bag bar,
  * toasts, combo popups, PA subtitles) and the Order Dash phone app.
  */
 import { getProduct, SECTIONS, formatPrice } from '../data/products';
-import { LEVELS, type LevelDef, type OrderDef } from '../data/order';
+import type { LevelDef, OrderDef } from '../data/order';
 import { formatTime } from '../logic/gameFlow';
 import { ruleLines, type OrderSession } from '../logic/order';
 import { BAG_COLORS } from '../render/cartModel';
 import { assetUrl } from '../render/assets';
-import { LANGS, productName, sectionName, setLang, t, type Lang } from '../i18n';
-import { isUnlocked, type Progress, type Settings } from '../settings';
+import { LANGS, pick, productName, sectionName, setLang, t, type Lang } from '../i18n';
+import type { Settings } from '../settings';
+import { nextUpgradeCost, rankIndex, rankProgress, rating, RANKS, upgradeLevel, UPGRADES, type Career, type DayPlan, type OrderResult, type RankDef, type UpgradeId } from '../logic/career';
 import type { MoodId } from '../render/moodIds';
 
 export interface HudCallbacks {
-  play(level: number): void;
+  play(): void;
+  buy(id: UpgradeId): void;
   restart(): void;
   resume(): void;
   toMenu(): void;
@@ -37,13 +40,15 @@ export function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 }
 
+export const money = (v: number) => `$${v.toFixed(2)}`;
+
 export function sectionLabel(pid: string): string {
   const s = SECTIONS[getProduct(pid).section];
   return s.aisle > 0 ? `${t('aisle', { n: s.aisle })} · ${sectionName(s.id)}` : sectionName(s.id);
 }
 
 type PhoneScreen = 'idle' | 'incoming' | 'picking' | 'courier' | 'delivered' | 'failed';
-type Screen = 'loading' | 'menu' | 'levels' | 'settings' | 'howto' | 'pause' | 'won' | 'lost';
+type Screen = 'loading' | 'menu' | 'shop' | 'settings' | 'howto' | 'pause' | 'review' | 'dayEnd';
 
 export class Hud {
   readonly root: HTMLDivElement;
@@ -61,22 +66,25 @@ export class Hud {
   private hint: HTMLDivElement;
   private pa: HTMLDivElement;
   private banner: HTMLDivElement;
+  private dayPill: HTMLDivElement;
+  private radar: HTMLDivElement;
+  private urgency: HTMLDivElement;
   private screens = new Map<Screen, HTMLDivElement>();
   private current: Screen | null = null;
-  private settingsReturn: Screen = 'menu';
+  private returnTo: Screen = 'menu';
   private thumbs: Record<string, string> = {};
   screen: PhoneScreen = 'idle';
   phoneOpen = false;
   private sig = '';
   courierEta = 0;
-  order: OrderDef = LEVELS[0].order;
-  level: LevelDef = LEVELS[0];
+  order!: OrderDef;
+  level!: LevelDef;
 
   constructor(
     parent: HTMLElement,
     private cb: HudCallbacks,
     private settings: Settings,
-    private progress: Progress,
+    private career: Career,
   ) {
     this.root = h('div', 'hud');
     parent.appendChild(this.root);
@@ -91,6 +99,9 @@ export class Hud {
     this.hint = h('div', 'controls-hint hidden');
     this.pa = h('div', 'pa hidden');
     this.banner = h('div', 'shift-banner hidden');
+    this.dayPill = h('div', 'day-pill hidden');
+    this.radar = h('div', 'radar hidden', '<i>➤</i><span></span>');
+    this.urgency = h('div', 'urgency');
     this.phone = h('div', 'phone hidden');
     const bezel = h('div', 'phone-bezel');
     const status = h('div', 'phone-status');
@@ -105,8 +116,8 @@ export class Hud {
       else if (el.closest('[data-act=complete]')) this.cb.complete();
       else if (el.closest('[data-act=toggle]')) this.cb.togglePhone();
     });
-    this.root.append(this.crosshair, this.hoverCard, this.heldCard, this.bagBar, this.timer, this.objective, this.toasts, this.popups, this.hint, this.pa, this.banner, this.phone);
-    for (const s of ['loading', 'menu', 'levels', 'settings', 'howto', 'pause', 'won', 'lost'] as Screen[]) {
+    this.root.append(this.urgency, this.dayPill, this.radar, this.crosshair, this.hoverCard, this.heldCard, this.bagBar, this.timer, this.objective, this.toasts, this.popups, this.hint, this.pa, this.banner, this.phone);
+    for (const s of ['loading', 'menu', 'shop', 'settings', 'howto', 'pause', 'review', 'dayEnd'] as Screen[]) {
       const el = h('div', `screen screen-${s} hidden`);
       el.addEventListener('click', (e) => this.onScreenClick(s, e));
       el.addEventListener('input', (e) => this.onSettingInput(e));
@@ -126,8 +137,10 @@ export class Hud {
     return src ? `<img class="${cls}" src="${src}" alt="">` : `<span class="${cls} ph"></span>`;
   }
 
-  setProgress(p: Progress) {
-    this.progress = p;
+  setCareer(c: Career) {
+    this.career = c;
+    if (this.current === 'shop') this.renderShop();
+    if (this.current === 'menu') this.renderMenu();
   }
 
   // ================================================================ menus
@@ -145,48 +158,79 @@ export class Hud {
     if (key) (s.querySelector('.load-text') as HTMLElement).textContent = key.startsWith('!') ? key.slice(1) : t(key);
   }
 
-  private nextLevel(): number {
-    for (const l of LEVELS) if (!(this.progress.stars[l.num] > 0)) return l.num;
-    return LEVELS.length;
+  private stars(n: number, max = 5): string {
+    return `<span class="stars5">${Array.from({ length: max }, (_, i) => `<i class="${i < n ? 'on' : ''}" style="animation-delay:${0.15 + i * 0.12}s">★</i>`).join('')}</span>`;
+  }
+
+  /** The long-term goal: rank ladder card with progress to the next rank. */
+  private rankCard(gain = 0): string {
+    const c = this.career;
+    const p = rankProgress(c);
+    const i = rankIndex(c);
+    const ladder = RANKS.map((r, j) => `<i class="${j < i ? 'done' : j === i ? 'cur' : ''}" style="--p:${r.paint}" title="${esc(t(`rank.${r.id}`))}">${j === RANKS.length - 1 ? '🏆' : j + 1}</i>`).join('');
+    const from = Math.max(0, p.k - (p.next ? gain / (p.next.stars - p.rank.stars) : 0));
+    return `<div class="rank-card">
+      <div class="rk-top"><span class="rk-badge" style="--p:${p.rank.paint}">${esc(t(`rank.${p.rank.id}`))}</span>
+        <span class="rk-next">${p.next ? esc(t('goal.next', { rank: t(`rank.${p.next.id}`), have: p.have, need: p.need })) : esc(t('goal.top'))}</span></div>
+      <div class="rk-bar"><i style="--from:${(from * 100).toFixed(1)}%;width:${(Math.min(1, p.k) * 100).toFixed(1)}%"></i>${gain > 0 ? `<b>+${gain} ★</b>` : ''}</div>
+      <div class="rk-ladder">${ladder}</div>
+    </div>`;
   }
 
   private renderMenu() {
-    const n = this.nextLevel();
-    const anyDone = Object.keys(this.progress.stars).length > 0;
+    const c = this.career;
+    const started = c.ratingCount > 0;
     this.screens.get('menu')!.innerHTML = `
       <div class="menu-wrap">
         ${this.logo('logo-menu')}
         <p class="tagline">${esc(t('menu.tagline'))}</p>
         <div class="menu-buttons">
-          <button class="btn primary xl" data-act="play" data-level="${n}">▶ ${esc(anyDone ? t('menu.continue', { n }) : t('menu.play'))}</button>
-          <button class="btn" data-act="go" data-to="levels">🗂 ${esc(t('menu.shifts'))}</button>
+          <button class="btn primary xl" data-act="play">▶ ${esc(started ? t('menu.startDay', { n: c.day }) : t('menu.play'))}</button>
+          <button class="btn" data-act="go" data-to="shop">🛒 ${esc(t('menu.shop'))}</button>
           <button class="btn" data-act="go" data-to="settings">⚙ ${esc(t('menu.settings'))}</button>
           <button class="btn" data-act="go" data-to="howto">❓ ${esc(t('menu.howto'))}</button>
         </div>
         <div class="lang-row">${LANGS.map((l) => `<button class="chip ${l.id === this.settings.lang ? 'on' : ''}" data-lang="${l.id}">${l.flag} ${l.name}</button>`).join('')}</div>
       </div>
+      <div class="menu-side">
+        <div class="goal-line"><b>🎯 ${esc(t('goal.title'))}</b> ${esc(t('goal.text'))}</div>
+        ${this.rankCard()}
+        ${
+          started
+            ? `<div class="menu-stats">
+          <div><b>${c.day}</b><span>${esc(t('menu.day'))}</span></div>
+          <div><b>${money(c.cash)}</b><span>${esc(t('menu.cash'))}</span></div>
+          <div><b>★ ${rating(c).toFixed(1)}</b><span>${esc(t('menu.rating'))}</span></div>
+          <div><b>${c.delivered}</b><span>${esc(t('menu.deliveries'))}</span></div>
+        </div>`
+            : ''
+        }
+      </div>
       <div class="credits">${esc(t('menu.credits'))}</div>`;
   }
 
-  private renderLevels() {
-    const cards = LEVELS.map((l) => {
-      const unlocked = isUnlocked(this.progress, l.num);
-      const stars = this.progress.stars[l.num] ?? 0;
-      const best = this.progress.best[l.num];
-      const items = l.order.lines.reduce((a, x) => a + x.qty, 0);
-      return `<button class="level-card ${unlocked ? '' : 'locked'} mood-${l.mood}" data-act="${unlocked ? 'play' : 'locked'}" data-level="${l.num}">
-        <span class="lv-num">${l.num}</span>
-        <span class="lv-title">${esc(t(`lvl.${l.num}.title`))}</span>
-        <span class="lv-desc">${esc(unlocked ? t(`lvl.${l.num}.desc`) : t('menu.locked'))}</span>
-        <span class="lv-meta">🧾 ${items} · 🛍 ${l.order.bagCount} · ⏱ ${formatTime(l.order.timeLimit)}</span>
-        <span class="lv-stars">${[1, 2, 3].map((i) => `<i class="${i <= stars ? 'on' : ''}">★</i>`).join('')}${best ? `<em>${t('menu.best')}: ${best}</em>` : ''}</span>
-        ${unlocked ? '' : '<span class="lock">🔒</span>'}
-      </button>`;
+  private renderShop() {
+    const c = this.career;
+    const cards = UPGRADES.map((u) => {
+      const lvl = upgradeLevel(c, u.id);
+      const cost = nextUpgradeCost(c, u.id);
+      const afford = cost !== null && c.cash >= cost;
+      const name = t(`up.${u.id}.name`);
+      return `<div class="up-card ${cost === null ? 'maxed' : ''}">
+        <span class="up-icon">${u.icon}</span>
+        <div class="up-body"><b>${esc(name)}</b><span>${esc(t(`up.${u.id}.desc`))}</span>
+          <div class="pips">${u.cost.map((_, i) => `<i class="${i < lvl ? 'on' : ''}"></i>`).join('')}<em>${esc(t('shop.level', { l: lvl, m: u.cost.length }))}</em></div></div>
+        ${
+          cost === null
+            ? `<span class="up-max">${esc(t('shop.max'))}</span>`
+            : `<button class="btn small ${afford ? 'primary' : ''}" data-act="buy" data-id="${u.id}" ${afford ? '' : 'disabled'}>${esc(t('shop.buy'))} · ${money(cost)}</button>`
+        }
+      </div>`;
     }).join('');
-    this.screens.get('levels')!.innerHTML = `
+    this.screens.get('shop')!.innerHTML = `
       <div class="panel wide">
-        <div class="panel-head"><h2>${esc(t('menu.shifts'))}</h2><button class="btn small" data-act="back">← ${esc(t('menu.back'))}</button></div>
-        <div class="level-grid">${cards}</div>
+        <div class="panel-head"><h2>${esc(t('shop.title'))}</h2><span class="cash-pill">💵 ${esc(t('shop.cash', { c: money(c.cash) }))}</span><button class="btn small" data-act="back">← ${esc(t('menu.back'))}</button></div>
+        <div class="up-grid">${cards}</div>
       </div>`;
   }
 
@@ -223,7 +267,7 @@ export class Hud {
     this.screens.get('howto')!.innerHTML = `
       <div class="panel">
         <div class="panel-head"><h2>${esc(t('menu.howto'))}</h2><button class="btn small" data-act="back">← ${esc(t('menu.back'))}</button></div>
-        <ol class="howto">${[1, 2, 3, 4, 5, 6].map((i) => `<li><span class="step">${i}</span><p>${t(`how.${i}`)}</p></li>`).join('')}</ol>
+        <ol class="howto">${[1, 2, 3, 4, 5, 6, 7].map((i) => `<li><span class="step">${i}</span><p>${t(`how.${i}`)}</p></li>`).join('')}</ol>
         <div class="howto-keys">${t('how.controls')}</div>
       </div>`;
   }
@@ -242,38 +286,59 @@ export class Hud {
       </div>`;
   }
 
-  showWon(data: { timeLeft: number; stars: number; mistakes: number; bestCombo: number; score: number; last: boolean }) {
-    const review = t(`end.review${Math.max(1, data.stars)}`);
-    this.screens.get('won')!.innerHTML = `
+  showReview(level: LevelDef, r: OrderResult, results: OrderResult[], promoted: RankDef | null = null) {
+    const o = level.order;
+    const last = level.index + 1 >= level.total;
+    const dots = Array.from({ length: level.total }, (_, i) => {
+      const x = results[i];
+      return `<i class="${x ? (x.delivered ? 'ok' : 'bad') : i === level.index ? 'cur' : ''}">${x ? (x.delivered ? '✓' : '✕') : i + 1}</i>`;
+    }).join('');
+    const row = (label: string, v: number, cls = '') => `<div class="pay-row ${cls}"><span>${esc(label)}</span><b>${money(v)}</b></div>`;
+    this.screens.get('review')!.innerHTML = `
       <div class="panel narrow center result">
-        <div class="badge good">${esc(t('end.delivered'))}</div>
-        <h2>${esc(t('end.onTheWay', { id: this.order.id }))}</h2>
-        <div class="stars">${[1, 2, 3].map((i) => `<span class="${i <= data.stars ? 'on' : ''}" style="animation-delay:${i * 0.18}s">★</span>`).join('')}</div>
-        <div class="review"><b>${esc(this.order.customer)}</b> <span>${'★'.repeat(Math.min(5, data.stars + 2))}</span><p>“${esc(review)}”</p></div>
-        <div class="stats">
-          <div><b>${data.score}</b><span>${esc(t('end.score'))}</span></div>
-          <div><b>${formatTime(data.timeLeft)}</b><span>${esc(t('end.timeLeft'))}</span></div>
-          <div><b>x${data.bestCombo}</b><span>${esc(t('end.combo'))}</span></div>
-          <div><b>${data.mistakes}</b><span>${esc(t('end.mistakes'))}</span></div>
+        <div class="badge ${r.delivered ? 'good' : 'bad'}">${esc(t(r.delivered ? 'rev.delivered' : 'rev.cancelled'))}${level.express ? ' · ⚡' : ''}</div>
+        <h2>${esc(t('rev.title', { id: o.id, name: o.customer }))}</h2>
+        <div class="review-card">
+          <div class="rc-head"><span class="avatar">${['🙂', '😀', '🤓', '😎', '🥳', '🧑‍🍳'][o.customer.length % 6]}</span><b>${esc(o.customer)}</b>${this.stars(r.stars)}</div>
+          <p>“${esc(pick(r.delivered ? `rev.${r.stars}` : 'rev.fail'))}”</p>
         </div>
-        ${data.last ? `<p class="all-done">${esc(t('end.allDone'))}</p>` : ''}
+        ${
+          r.delivered
+            ? `<div class="pay">${row(t('rev.pay'), r.pay)}${row(t('rev.speed'), r.speedBonus)}${row(t('rev.tip'), r.tip, 'tip')}${row(t('rev.total'), r.total, 'total')}</div>`
+            : `<p>${esc(t('end.lateNotPacked'))}</p>`
+        }
+        ${
+          promoted
+            ? `<div class="promo" style="--p:${promoted.paint}"><b>🎉 ${esc(t('rev.promoted', { rank: t(`rank.${promoted.id}`) }))}</b><span>${esc(t('rev.bonus', { c: money(promoted.bonus) }))}</span></div>`
+            : ''
+        }
+        ${this.rankCard(r.delivered ? r.stars : 0)}
+        <div class="day-dots">${dots}</div>
         <div class="btn-row">
-          ${data.last ? '' : `<button class="btn primary" data-act="next">${esc(t('end.next'))} →</button>`}
-          <button class="btn" data-act="restart">↻ ${esc(t('end.again'))}</button>
-          <button class="btn" data-act="menu">⌂ ${esc(t('pause.menu'))}</button>
+          <button class="btn primary" data-act="next">${esc(t(last ? 'rev.endDay' : 'rev.next'))} → <kbd>Enter</kbd></button>
         </div>
       </div>`;
   }
 
-  showLost(bagged: number, total: number, packed: boolean) {
-    this.screens.get('lost')!.innerHTML = `
+  showDayEnd(plan: DayPlan, results: OrderResult[], passed: boolean) {
+    const delivered = results.filter((r) => r.delivered).length;
+    const earned = results.reduce((a, r) => a + r.total, 0);
+    const avg = results.length ? results.reduce((a, r) => a + r.stars, 0) / results.length : 0;
+    const nextDay = this.career.day;
+    this.screens.get('dayEnd')!.innerHTML = `
       <div class="panel narrow center result">
-        <div class="badge bad">${esc(t('end.timeUp'))}</div>
-        <h2>${esc(t('end.cancelled'))}</h2>
-        <p>${esc(t(packed ? 'end.lateNotDelivered' : 'end.lateNotPacked'))}</p>
-        <div class="stats"><div><b>${bagged}/${total}</b><span>${esc(t('end.bagged'))}</span></div></div>
+        <div class="badge ${passed ? 'good' : 'bad'}">${esc(t('day.title', { n: plan.day }))}</div>
+        <h2>${esc(t(passed ? 'dayEnd.passed' : 'dayEnd.failed', { n: plan.day }))}</h2>
+        <p>${esc(t(passed ? 'dayEnd.passText' : 'dayEnd.failText'))}</p>
+        <div class="stats">
+          <div><b>${delivered}/${plan.orders.length}</b><span>${esc(t('dayEnd.delivered'))} · ${esc(t('day.goal', { g: plan.goal, n: plan.orders.length }).split(':')[0])} ${plan.goal}</span></div>
+          <div><b>${money(earned)}</b><span>${esc(t('dayEnd.earned'))}</span></div>
+          <div><b>★ ${avg.toFixed(1)}</b><span>${esc(t('dayEnd.rating'))}</span></div>
+        </div>
+        ${this.rankCard()}
         <div class="btn-row">
-          <button class="btn primary" data-act="restart">↻ ${esc(t('end.retry'))}</button>
+          <button class="btn primary" data-act="next">▶ ${esc(t(passed ? 'dayEnd.next' : 'dayEnd.retry', { n: nextDay }))}</button>
+          <button class="btn" data-act="go" data-to="shop">🛒 ${esc(t('menu.shop'))} · ${money(this.career.cash)}</button>
           <button class="btn" data-act="menu">⌂ ${esc(t('pause.menu'))}</button>
         </div>
       </div>`;
@@ -281,11 +346,9 @@ export class Hud {
 
   showScreen(name: Screen | null) {
     if (name === 'menu') this.renderMenu();
-    if (name === 'levels') this.renderLevels();
-    if (name === 'settings') {
-      if (this.current && this.current !== 'settings') this.settingsReturn = this.current;
-      this.renderSettings();
-    }
+    if ((name === 'settings' || name === 'shop') && this.current && this.current !== name) this.returnTo = this.current;
+    if (name === 'shop') this.renderShop();
+    if (name === 'settings') this.renderSettings();
     if (name === 'howto') this.renderHowto();
     if (name === 'pause') this.renderPause();
     this.current = name;
@@ -317,13 +380,16 @@ export class Hud {
     }
     switch (el.dataset.act) {
       case 'play':
-        this.cb.play(Number(el.dataset.level));
+        this.cb.play();
+        break;
+      case 'buy':
+        this.cb.buy(el.dataset.id as UpgradeId);
         break;
       case 'go':
         this.showScreen(el.dataset.to as Screen);
         break;
       case 'back':
-        this.showScreen(s === 'settings' ? this.settingsReturn : 'menu');
+        this.showScreen(s === 'settings' || s === 'shop' ? this.returnTo : 'menu');
         break;
       case 'resume':
         this.cb.resume();
@@ -367,8 +433,10 @@ export class Hud {
   }
 
   setPlaying(on: boolean) {
-    for (const el of [this.timer, this.phone, this.objective, this.crosshair]) el.classList.toggle('hidden', !on);
+    for (const el of [this.timer, this.phone, this.objective, this.crosshair, this.dayPill]) el.classList.toggle('hidden', !on);
     if (!on) {
+      this.radar.classList.add('hidden');
+      this.setUrgency(0);
       this.bagBar.classList.add('hidden');
       this.heldCard.classList.add('hidden');
       this.hoverCard.classList.add('hidden');
@@ -381,19 +449,47 @@ export class Hud {
     this.hint.classList.toggle('hidden', !on);
   }
 
-  shiftBanner(level: LevelDef, newRule: string | null) {
-    this.banner.innerHTML = `<div class="sb-num">${t('menu.shifts')} · ${level.num}/${LEVELS.length}</div><div class="sb-title">${esc(t(`lvl.${level.num}.title`))}</div>${newRule ? `<div class="sb-rule">✨ ${esc(newRule)}</div>` : ''}`;
+  /** Big banner at the start of a day / an order. */
+  orderBanner(level: LevelDef, goal: number, newRule: string | null) {
+    const first = level.index === 0;
+    this.banner.innerHTML = first
+      ? `<div class="sb-num">${esc(t('day.goal', { g: goal, n: level.total }))}</div><div class="sb-title">${esc(t('day.title', { n: level.day }))}</div>${newRule ? `<div class="sb-rule">✨ ${esc(t('day.newRule'))}: ${esc(newRule)}</div>` : ''}`
+      : `<div class="sb-num">${esc(t('day.title', { n: level.day }))}</div><div class="sb-title">${esc(t('order.banner', { i: level.index + 1, n: level.total }))}</div>${level.express ? `<div class="sb-rule">${esc(t('order.express'))}</div>` : ''}`;
     this.banner.classList.remove('hidden');
     this.banner.classList.remove('out');
-    setTimeout(() => this.banner.classList.add('out'), 3600);
-    setTimeout(() => this.banner.classList.add('hidden'), 4200);
+    clearTimeout((this.banner as unknown as { _a?: number })._a);
+    clearTimeout((this.banner as unknown as { _b?: number })._b);
+    (this.banner as unknown as { _a?: number })._a = window.setTimeout(() => this.banner.classList.add('out'), 3600);
+    (this.banner as unknown as { _b?: number })._b = window.setTimeout(() => this.banner.classList.add('hidden'), 4200);
+    this.dayPill.innerHTML = `<b>${esc(t('hud.day', { d: level.day }))}</b><span>${esc(t('hud.orderOf', { i: level.index + 1, n: level.total }))}</span>${level.express ? `<em>⚡ ${esc(t('hud.express'))}</em>` : ''}<span class="dp-cash">💵 ${money(this.career.cash)}</span>`;
+  }
+
+  setCash(text: string) {
+    const el = this.dayPill.querySelector('.dp-cash');
+    const html = `💵 ${text}`;
+    if (el && el.textContent !== html) el.textContent = html;
+  }
+
+  /** Arrow towards the next item (Shelf Radar upgrade). angle: 0 = straight ahead, + = right. */
+  setRadar(angle: number | null, dist = 0) {
+    this.radar.classList.toggle('hidden', angle === null);
+    if (angle === null) return;
+    (this.radar.firstElementChild as HTMLElement).style.transform = `rotate(${angle - Math.PI / 2}rad)`;
+    (this.radar.lastElementChild as HTMLElement).textContent = `${Math.round(dist)} m`;
+  }
+
+  /** 0 = calm, 1 = last seconds: red pulsing edges. */
+  setUrgency(u: number) {
+    this.urgency.style.setProperty('--u', u.toFixed(2));
+    this.urgency.classList.toggle('on', u > 0);
+    this.timer.classList.toggle('shake', u > 0.6);
   }
 
   setTimer(seconds: number, running: boolean) {
     const html = `<span class="t-label">${t('hud.time')}</span><span class="t-val">${formatTime(seconds)}</span>`;
     if (this.timer.innerHTML !== html) this.timer.innerHTML = html;
-    this.timer.classList.toggle('warn', seconds <= 60 && seconds > 20);
-    this.timer.classList.toggle('danger', seconds <= 20);
+    this.timer.classList.toggle('warn', seconds <= 60 && seconds > 30);
+    this.timer.classList.toggle('danger', seconds <= 30);
     this.timer.classList.toggle('paused', !running);
   }
 
@@ -482,6 +578,7 @@ export class Hud {
           <div class="incoming">
             <div class="ring-icon">🛎️</div>
             <div class="inc-title">${esc(t('app.order', { id: o.id }))}</div>
+            ${this.level?.express ? `<div class="inc-express">⚡ ${esc(t('hud.express'))}</div>` : ''}
             <div class="inc-row"><span>👤 ${esc(o.customer)}</span><span>📍 ${o.distanceKm} km</span></div>
             <div class="inc-addr">${esc(o.address)}</div>
             <div class="inc-items">${o.lines.map((l) => this.thumb(l.productId, 'thumb sm')).join('')}</div>

@@ -50,8 +50,10 @@ const OutlineShader = {
       vec4 col = texture2D(tColor, vUv);
       float d0 = texture2D(tDepth, vUv).x;
       if (d0 >= 0.99999) { gl_FragColor = col; return; }
-      vec2 o = texel * thickness;
       float z0 = viewZ(vUv);
+      // lines thin out with distance: full width up close, one texel far away
+      float far = smoothstep(4.0, 12.0, -z0);
+      vec2 o = texel * max(1.0, floor(mix(thickness, 1.0, far) + 0.5));
       float zl = viewZ(vUv - vec2(o.x, 0.0));
       float zr = viewZ(vUv + vec2(o.x, 0.0));
       float zd = viewZ(vUv - vec2(0.0, o.y));
@@ -65,7 +67,8 @@ const OutlineShader = {
       float silEdge = smoothstep(0.035, 0.07, sil);
       float creaseEdge = smoothstep(0.004, 0.012, crease) * (1.0 - smoothstep(6.0, 18.0, dist));
       float e = max(silEdge, creaseEdge * 0.85);
-      e *= 1.0 - smoothstep(30.0, 70.0, dist);
+      // and fade: distant shelves keep a hint of ink instead of a black mesh of lines
+      e *= mix(1.0, 0.45, smoothstep(8.0, 30.0, dist)) * (1.0 - smoothstep(30.0, 70.0, dist));
       vec3 line = mix(col.rgb * 0.18, ink, 0.65);
       gl_FragColor = vec4(mix(col.rgb, line, e * strength), col.a);
     }
