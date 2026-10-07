@@ -86,9 +86,18 @@ tests/               vitest unit tests
 scripts/playtest.mjs Playwright end-to-end playtest
 ```
 
+## Gökçayır Footgolf (demo)
+
+A separate, self-contained demo lives in `public/gokcayir/index.html`: footgolf on toy islands. You kick a football into the cup in as few strokes as possible over three holes.
+
+- Open it with `npm run dev` at `http://localhost:5173/gokcayir/`, or serve the `public/gokcayir/` folder with any static server. `#delik2` and `#delik3` jump straight to holes 2 and 3.
+- Course surfaces (fairway, rough, sand, green, ponds, island edges) are signed-distance shapes that are shared between the physics and the terrain shader, so every edge you see is also the edge the ball feels.
+- Controls: drag or ← → to aim, ↑ ↓ or the shot chips to set the height, Q / E or the ball widget for curve, and hold then release Space for power. Press M for the course map.
+- Models: KayKit Medieval Hexagon Pack and Adventurers (CC0). Rebuild them with `bash scripts/fetch-gokcayir-assets.sh` and then `node scripts/build-gokcayir-assets.mjs`.
+
 ## Credits
 
-- Characters, furniture and food models: [KayKit](https://kaylousberg.itch.io/) by Kay Lousberg (CC0).
+- Characters, furniture, food and island models: [KayKit](https://kaylousberg.itch.io/) by Kay Lousberg (CC0).
 - HDR skies: [Poly Haven](https://polyhaven.com/) (CC0).
 - Fonts: Baloo 2 and Nunito (SIL Open Font License, see `public/fonts/`).
 - Store music and the Order Dash logo were supplied by the project owner.
