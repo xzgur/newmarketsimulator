@@ -73,10 +73,10 @@ try {
   await page.keyboard.up('w');
   const p1 = await g(() => window.__game.player);
   assert(p1.z < p0.z - 2, `W walks forward (z ${p0.z.toFixed(2)} → ${p1.z.toFixed(2)})`);
-  await page.mouse.move(640, 360);
-  await page.mouse.down();
-  await page.mouse.move(760, 360, { steps: 6 });
-  await page.mouse.up();
+  // headless pointer lock reports bogus deltas, so feed the input handler real movement events
+  await g(() => {
+    for (let i = 0; i < 6; i++) window.dispatchEvent(new MouseEvent('mousemove', { movementX: 20, movementY: 0 }));
+  });
   await advance(0.1);
   const p2 = await g(() => window.__game.player);
   assert(Math.abs(p2.yaw - p1.yaw) > 0.1, 'mouse drag turns the view');
