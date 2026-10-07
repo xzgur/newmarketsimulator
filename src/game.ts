@@ -677,7 +677,11 @@ export class Game {
     this.raycaster.setFromCamera(new THREE.Vector2(0, 0), this.camera);
     this.raycaster.far = 3.1;
     if (ph === 'playing' && !this.flow.paused) {
-      const bagHits = this.raycaster.intersectObjects(this.cart.hitTargets, false);
+      // with an empty hand an open bag has nothing to offer, so look past it (e.g. into low produce crates)
+      const holding = this.session.tray.length > 0;
+      const bagHits = this.raycaster
+        .intersectObjects(this.cart.hitTargets, false)
+        .filter((h) => holding || !this.session.bags[ShoppingCart.bagIndexOf(h.object)].open);
       if (bagHits.length) {
         target = { kind: 'bag', index: ShoppingCart.bagIndexOf(bagHits[0].object) };
       } else {
