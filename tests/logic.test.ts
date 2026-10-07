@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { OrderSession, bagConflict } from '../src/logic/order';
 import { DEMO_ORDER, type OrderDef } from '../src/data/order';
 import { getProduct, PRODUCT_BY_ID } from '../src/data/products';
-import { buildLayout, findDisplayAt, interactionZone } from '../src/data/layout';
+import { buildLayout, navPath } from '../src/data/layout';
 import { resolveCircle, circleIntersectsBox } from '../src/logic/collision';
-import { createCart, stepCart, CART } from '../src/logic/cartPhysics';
+import { cartCenter, createPlayer, look, PLAYER, speedOf, stepPlayer } from '../src/logic/player';
 import { GameFlow, formatTime } from '../src/logic/gameFlow';
 
 const small: OrderDef = {
@@ -132,27 +132,30 @@ describe('layout', () => {
     expect(sections.size).toBeGreaterThanOrEqual(5);
   });
 
-  it('every display can be reached by the cart (zone centre not inside a collider)', () => {
+  it('every display has a reachable standing spot in front of it', () => {
     for (const d of layout.displays) {
-      const z = interactionZone(d);
-      const blocked = layout.colliders.some((b) => circleIntersectsBox(z.cx, z.cz, CART.radius, b));
+      const blocked = layout.colliders.some((b) => circleIntersectsBox(d.stand.x, d.stand.z, PLAYER.bodyRadius, b));
       expect(blocked, `display ${d.id} ${d.productId}`).toBe(false);
-      expect(findDisplayAt(layout.displays, z.cx, z.cz)?.id).toBe(d.id);
+      // the shelf is within arm's reach of the standing spot
+      expect(Math.hypot(d.stand.x - d.x, d.stand.z - d.z)).toBeLessThan(2.2);
     }
+  });
+
+  it('nav graph is connected and its nodes are walkable', () => {
+    for (const n of layout.nav) {
+      expect(layout.colliders.some((b) => circleIntersectsBox(n.x, n.z, 0.3, b))).toBe(false);
+    }
+    for (let i = 1; i < layout.nav.length; i++) expect(navPath(layout.nav, 0, i).length).toBeGreaterThan(0);
   });
 
   it('start and delivery spots are free', () => {
     for (const p of [layout.start, layout.delivery]) {
-      expect(layout.colliders.some((b) => circleIntersectsBox(p.x, p.z, CART.radius, b))).toBe(false);
+      expect(layout.colliders.some((b) => circleIntersectsBox(p.x, p.z, PLAYER.cartRadius + 0.3, b))).toBe(false);
     }
-  });
-
-  it('finds nothing in the middle of an empty corridor', () => {
-    expect(findDisplayAt(layout.displays, 0, 6)).toBeNull();
   });
 });
 
-describe('collision + cart physics', () => {
+describe('collision + player', () => {
   it('pushes a circle out of a box', () => {
     const r = resolveCircle(0.9, 0, 0.5, [{ minX: -1, maxX: 0.5, minZ: -1, maxZ: 1 }]);
     expect(r.hit).toBe(true);
@@ -164,27 +167,49 @@ describe('collision + cart physics', () => {
     expect(r.x).toBeCloseTo(1.0, 5);
   });
 
-  it('accelerates forward along heading and stops with brake', () => {
-    const c = createCart(0, 0, 0);
-    for (let i = 0; i < 120; i++) stepCart(c, { throttle: 1, steer: 0, brake: false }, 1 / 60, []);
-    expect(c.speed).toBeCloseTo(CART.maxForward, 3);
-    expect(c.z).toBeGreaterThan(3);
-    expect(Math.abs(c.x)).toBeLessThan(1e-6);
-    for (let i = 0; i < 60; i++) stepCart(c, { throttle: 0, steer: 0, brake: true }, 1 / 60, []);
-    expect(c.speed).toBe(0);
+  const idle = { forward: 0, strafe: 0, turn: 0, sprint: false };
+
+  it('walks forward along the look direction and stops when released', () => {
+    const p = createPlayer(0, 0, 0);
+    for (let i = 0; i < 120; i++) stepPlayer(p, { ...idle, forward: 1 }, 1 / 60, []);
+    expect(speedOf(p)).toBeCloseTo(PLAYER.walk, 1);
+    expect(p.z).toBeGreaterThan(4);
+    expect(Math.abs(p.x)).toBeLessThan(1e-6);
+    for (let i = 0; i < 120; i++) stepPlayer(p, idle, 1 / 60, []);
+    expect(speedOf(p)).toBeLessThan(0.01);
   });
 
-  it('turns left (towards +X when facing +Z) with positive steer, even standing still', () => {
-    const c = createCart(0, 0, 0);
-    for (let i = 0; i < 30; i++) stepCart(c, { throttle: 0, steer: 1, brake: false }, 1 / 60, []);
-    expect(c.heading).toBeGreaterThan(0.3);
+  it('sprints faster than it walks', () => {
+    const p = createPlayer(0, 0, 0);
+    for (let i = 0; i < 120; i++) stepPlayer(p, { ...idle, forward: 1, sprint: true }, 1 / 60, []);
+    expect(speedOf(p)).toBeGreaterThan(PLAYER.walk + 1);
   });
 
-  it('cannot drive through a wall', () => {
-    const c = createCart(0, 0, 0);
-    const wall = [{ minX: -5, maxX: 5, minZ: 2, maxZ: 3 }];
-    for (let i = 0; i < 300; i++) stepCart(c, { throttle: 1, steer: 0, brake: false }, 1 / 60, wall);
-    expect(c.z).toBeLessThanOrEqual(2 - CART.radius + 1e-6);
+  it('strafes to the right with positive strafe (facing +Z → -X)', () => {
+    const p = createPlayer(0, 0, 0);
+    for (let i = 0; i < 60; i++) stepPlayer(p, { ...idle, strafe: 1 }, 1 / 60, []);
+    expect(p.x).toBeLessThan(-0.5);
+  });
+
+  it('mouse look clamps the pitch', () => {
+    const p = createPlayer(0, 0, 0);
+    look(p, 0.5, -10);
+    expect(p.pitch).toBe(PLAYER.minPitch);
+    expect(p.yaw).toBeCloseTo(0.5);
+  });
+
+  it('the cart in front stops at walls (cart cannot clip into a shelf)', () => {
+    const p = createPlayer(0, 0, 0);
+    const wall = [{ minX: -5, maxX: 5, minZ: 3, maxZ: 4 }];
+    for (let i = 0; i < 300; i++) stepPlayer(p, { ...idle, forward: 1 }, 1 / 60, wall);
+    const c = cartCenter(p);
+    expect(c.z).toBeLessThanOrEqual(3 - PLAYER.cartRadius + 1e-6);
+  });
+
+  it('customers block the player', () => {
+    const p = createPlayer(0, 0, 0);
+    for (let i = 0; i < 200; i++) stepPlayer(p, { ...idle, forward: 1 }, 1 / 60, [], [{ x: 0, z: 2.5, r: 0.3 }]);
+    expect(cartCenter(p).z).toBeLessThan(2.5 - 0.3 - PLAYER.cartRadius + 0.01);
   });
 });
 
@@ -193,6 +218,11 @@ describe('GameFlow', () => {
     const f = new GameFlow(10);
     expect(f.timerRunning).toBe(false);
     f.start();
+    expect(f.phase).toBe('incoming');
+    f.tick(2);
+    expect(f.timeLeft).toBe(10); // the clock only starts once the order is accepted
+    expect(f.canDrive).toBe(true);
+    expect(f.accept()).toBe(true);
     f.tick(2);
     expect(f.timeLeft).toBe(8);
     expect(f.orderClosed()).toBe(true);
@@ -208,6 +238,7 @@ describe('GameFlow', () => {
   it('loses when time runs out, and penalties count', () => {
     const f = new GameFlow(10);
     f.start();
+    f.accept();
     f.penalize(5);
     expect(f.timeLeft).toBe(5);
     expect(f.tick(6)).toBe(true);
@@ -218,6 +249,7 @@ describe('GameFlow', () => {
   it('pause stops the clock', () => {
     const f = new GameFlow(10);
     f.start();
+    f.accept();
     f.paused = true;
     f.tick(3);
     expect(f.timeLeft).toBe(10);

@@ -1,20 +1,24 @@
-/** DOM overlay: order list, timer, prompts, cart (bagging) panel, screens. */
+/**
+ * DOM overlay: the "Kapında!" picker app on the phone mounted to the cart,
+ * crosshair + hover card, held item card, timer, toasts, combo popups and
+ * full-screen menus (loading, title with mood picker, pause, win, lose).
+ */
 import type { OrderDef } from '../data/order';
-import { getProduct, SECTIONS } from '../data/products';
+import { getProduct, SECTIONS, formatPrice } from '../data/products';
 import { formatTime } from '../logic/gameFlow';
 import { RULES, type OrderSession } from '../logic/order';
-import { BAG_COLORS } from '../render/cart';
+import { BAG_COLORS } from '../render/cartModel';
+import { MOODS, type MoodId } from '../render/mood';
+import type { Quality } from '../render/post';
 
 export interface HudCallbacks {
-  start(): void;
+  start(mood: MoodId, quality: Quality): void;
   restart(): void;
   resume(): void;
-  openBag(i: number): void;
-  place(trayIndex: number, bagIndex: number): void;
-  discard(trayIndex: number): void;
-  unbag(bagIndex: number, itemIndex: number): void;
-  closeOrder(): void;
-  togglePanel(): void;
+  accept(): void;
+  complete(): void;
+  togglePhone(): void;
+  setMood(mood: MoodId): void;
 }
 
 const h = <K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, html?: string): HTMLElementTagNameMap[K] => {
@@ -24,379 +28,389 @@ const h = <K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, html?: s
   return e;
 };
 
-function esc(s: string): string {
+export function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 }
 
+type PhoneScreen = 'idle' | 'incoming' | 'picking' | 'courier' | 'delivered' | 'failed';
+
 export class Hud {
   readonly root: HTMLDivElement;
-  private orderList: HTMLDivElement;
-  private orderProgress: HTMLDivElement;
+  private phone: HTMLDivElement;
+  private phoneScreen: HTMLDivElement;
+  private phoneClock: HTMLSpanElement;
+  private crosshair: HTMLDivElement;
+  private hoverCard: HTMLDivElement;
+  private heldCard: HTMLDivElement;
   private timer: HTMLDivElement;
-  private timerValue: HTMLDivElement;
   private objective: HTMLDivElement;
-  private prompt: HTMLDivElement;
-  private toastBox: HTMLDivElement;
-  private floatLabel: HTMLDivElement;
-  private panel: HTMLDivElement;
-  private trayBox: HTMLDivElement;
-  private bagsBox: HTMLDivElement;
-  private closeBtn: HTMLButtonElement;
-  private screens: Record<'intro' | 'pause' | 'won' | 'lost', HTMLDivElement>;
-  private minimapSlot: HTMLDivElement;
-  private trayBadge: HTMLDivElement;
-  selectedTray = -1;
-  panelOpen = false;
-  private lastOrderSig = '';
-  private lastPanelSig = '';
+  private toasts: HTMLDivElement;
+  private popups: HTMLDivElement;
+  private hint: HTMLDivElement;
+  private screens: Record<'loading' | 'title' | 'pause' | 'won' | 'lost', HTMLDivElement>;
   private thumbs: Record<string, string> = {};
+  screen: PhoneScreen = 'idle';
+  phoneOpen = false;
+  private sig = '';
+  private selectedMood: MoodId = 'day';
+  private selectedQuality: Quality = 'high';
+  courierEta = 0;
 
   constructor(parent: HTMLElement, private order: OrderDef, private cb: HudCallbacks) {
     this.root = h('div', 'hud');
     parent.appendChild(this.root);
 
-    // order card
-    const card = h('div', 'card order-card');
-    card.appendChild(h('div', 'order-head', `<div class="order-title">Sipariş <b>${esc(order.id)}</b></div><div class="order-cust">${esc(order.customer)} · ${esc(order.address)}</div>`));
-    this.orderProgress = h('div', 'order-progress');
-    card.appendChild(this.orderProgress);
-    this.orderList = h('div', 'order-list');
-    card.appendChild(this.orderList);
-    this.root.appendChild(card);
-
-    // timer + objective
-    this.timer = h('div', 'timer');
-    this.timer.appendChild(h('div', 'timer-label', 'KALAN SÜRE'));
-    this.timerValue = h('div', 'timer-value', formatTime(order.timeLimit));
-    this.timer.appendChild(this.timerValue);
-    this.root.appendChild(this.timer);
-    this.objective = h('div', 'objective');
-    this.root.appendChild(this.objective);
-
-    // minimap slot
-    this.minimapSlot = h('div', 'card minimap');
-    this.root.appendChild(this.minimapSlot);
-
-    // tray badge (bottom right) - opens panel
-    this.trayBadge = h('div', 'tray-badge');
-    this.trayBadge.addEventListener('click', () => this.cb.togglePanel());
-    this.root.appendChild(this.trayBadge);
-
-    this.prompt = h('div', 'prompt');
-    this.root.appendChild(this.prompt);
-    this.toastBox = h('div', 'toasts');
-    this.root.appendChild(this.toastBox);
-    this.floatLabel = h('div', 'float-label');
-    this.root.appendChild(this.floatLabel);
-
-    this.root.appendChild(
-      h(
-        'div',
-        'controls-hint',
-        '<span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> sür</span><span><kbd>Space</kbd> fren</span><span><kbd>E</kbd> al / teslim et</span><span><kbd>Tab</kbd> araba paneli</span><span><kbd>C</kbd> kamera</span><span><kbd>Esc</kbd> duraklat</span>',
-      ),
+    this.crosshair = h('div', 'crosshair', '<i></i>');
+    this.hoverCard = h('div', 'hover-card hidden');
+    this.heldCard = h('div', 'held-card hidden');
+    this.timer = h('div', 'timer hidden', '<span class="t-label">KALAN</span><span class="t-val">5:00</span>');
+    this.objective = h('div', 'objective hidden');
+    this.toasts = h('div', 'toasts');
+    this.popups = h('div', 'popups');
+    this.hint = h(
+      'div',
+      'controls-hint hidden',
+      '<span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> it</span><span><kbd>Fare</kbd> bak</span><span><kbd>Sol tık</kbd> al / poşete koy</span><span><kbd>Sağ tık</kbd> geri bırak</span><span><kbd>Shift</kbd> koş</span><span><kbd>Tab</kbd> telefon</span><span><kbd>Esc</kbd> duraklat</span>',
     );
 
-    // cart panel
-    this.panel = h('div', 'panel hidden');
-    const ph = h('div', 'panel-head', '<div><div class="panel-title">Araba Paneli</div><div class="panel-sub">Ürünü seç → poşete tıkla (ya da sürükle). Kısayol: <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd></div></div>');
-    const x = h('button', 'icon-btn', '✕');
-    x.title = 'Kapat (Tab)';
-    x.addEventListener('click', () => this.cb.togglePanel());
-    ph.appendChild(x);
-    this.panel.appendChild(ph);
-    this.panel.appendChild(h('div', 'section-title', 'Toplama Kasası (alt raf)'));
-    this.trayBox = h('div', 'tray');
-    this.panel.appendChild(this.trayBox);
-    this.panel.appendChild(h('div', 'section-title', 'Sipariş Poşetleri (üst kasa)'));
-    this.bagsBox = h('div', 'bags');
-    this.panel.appendChild(this.bagsBox);
-    this.panel.appendChild(h('div', 'rules', `<b>Poşetleme kuralları</b><ul>${RULES.map((r) => `<li>${esc(r)}</li>`).join('')}<li>Her poşete en fazla ${order.bagCapacity} ürün.</li><li>Siparişte olmayan ürünü poşete koymaya çalışmak <b>-5 sn</b> ceza.</li></ul>`));
-    this.closeBtn = h('button', 'btn primary close-order', 'Siparişi Tamamla <kbd>F</kbd>');
-    this.closeBtn.addEventListener('click', () => this.cb.closeOrder());
-    this.panel.appendChild(this.closeBtn);
-    this.root.appendChild(this.panel);
+    // phone
+    this.phone = h('div', 'phone hidden');
+    const bezel = h('div', 'phone-bezel');
+    const status = h('div', 'phone-status');
+    this.phoneClock = h('span', '', '09:41');
+    status.appendChild(this.phoneClock);
+    status.appendChild(h('span', 'phone-notch'));
+    status.appendChild(h('span', '', '5G ▮▮▮ 🔋'));
+    bezel.appendChild(status);
+    this.phoneScreen = h('div', 'phone-screen');
+    bezel.appendChild(this.phoneScreen);
+    this.phone.appendChild(bezel);
+    this.phone.addEventListener('click', (e) => {
+      const t = e.target as HTMLElement;
+      if (t.closest('[data-act=accept]')) this.cb.accept();
+      else if (t.closest('[data-act=complete]')) this.cb.complete();
+      else if (t.closest('[data-act=toggle]')) this.cb.togglePhone();
+    });
+
+    this.root.append(this.crosshair, this.hoverCard, this.heldCard, this.timer, this.objective, this.toasts, this.popups, this.hint, this.phone);
 
     this.screens = {
-      intro: this.buildIntro(),
-      pause: this.buildScreen('Duraklatıldı', '<p>Süre durdu. Hazır olduğunda devam et.</p>', [
-        ['Devam Et', () => this.cb.resume(), 'primary'],
-        ['Yeniden Başla', () => this.cb.restart(), ''],
-      ]),
-      won: this.buildScreen('', '', [['Tekrar Oyna', () => this.cb.restart(), 'primary']]),
-      lost: this.buildScreen('', '', [['Tekrar Dene', () => this.cb.restart(), 'primary']]),
+      loading: this.buildLoading(),
+      title: this.buildTitle(),
+      pause: this.buildPause(),
+      won: this.buildEnd('won'),
+      lost: this.buildEnd('lost'),
     };
     for (const s of Object.values(this.screens)) this.root.appendChild(s);
   }
 
   setThumbnails(t: Record<string, string>) {
     this.thumbs = t;
-    this.lastOrderSig = '';
-    this.lastPanelSig = '';
-    const introList = this.screens.intro.querySelector('.intro-items');
-    if (introList) introList.innerHTML = this.introItems();
+    this.sig = '';
   }
 
-  attachMinimap(c: HTMLCanvasElement) {
-    this.minimapSlot.appendChild(c);
-  }
-
-  private thumb(pid: string, cls = 'thumb'): string {
+  thumb(pid: string, cls = 'thumb'): string {
     const src = this.thumbs[pid];
     return src ? `<img class="${cls}" src="${src}" alt="">` : `<span class="${cls} ph"></span>`;
   }
 
-  private introItems(): string {
-    return this.order.lines
-      .map((l) => {
-        const p = getProduct(l.productId);
-        return `<div class="intro-item">${this.thumb(p.id)}<span>${l.qty > 1 ? `<b>${l.qty}×</b> ` : ''}${esc(p.name)}</span></div>`;
-      })
+  // ------------------------------------------------------------ screens
+  private buildLoading(): HTMLDivElement {
+    const s = h('div', 'screen loading');
+    s.innerHTML = `<div class="logo">MARKET<br><span>KOŞUSU</span></div><div class="load-bar"><i></i></div><div class="load-text">Raflar diziliyor…</div>`;
+    return s;
+  }
+
+  setLoading(p: number, text?: string) {
+    const bar = this.screens.loading.querySelector('.load-bar i') as HTMLElement;
+    bar.style.width = `${Math.round(p * 100)}%`;
+    if (text) (this.screens.loading.querySelector('.load-text') as HTMLElement).textContent = text;
+  }
+
+  private buildTitle(): HTMLDivElement {
+    const s = h('div', 'screen title');
+    const moods = (Object.keys(MOODS) as MoodId[])
+      .map(
+        (id) => `<button class="mood-card ${id === this.selectedMood ? 'on' : ''}" data-mood="${id}">
+          <span class="mood-art mood-${id}"></span>
+          <b>${esc(MOODS[id].name)}</b><small>${esc(MOODS[id].sub)}</small></button>`,
+      )
       .join('');
-  }
-
-  private buildIntro(): HTMLDivElement {
-    const s = h('div', 'screen intro');
-    const box = h('div', 'screen-box wide');
-    box.innerHTML = `
-      <div class="brand">MARKET <span>Online Sipariş</span></div>
-      <h1>Sipariş Toplama Demo</h1>
-      <p class="lead">Online sipariş <b>${esc(this.order.id)}</b> geldi! Robot toplama arabanı sür, ürünleri reyonlardan topla,
-      poşetlere yerleştir ve kapıda bekleyen motorcuya teslim et. Süren: <b>${formatTime(this.order.timeLimit)}</b>.</p>
-      <div class="intro-grid">
-        <div>
-          <h3>Sipariş listesi</h3>
-          <div class="intro-items">${this.introItems()}</div>
+    s.innerHTML = `
+      <div class="title-wrap">
+        <div class="logo big">MARKET<br><span>KOŞUSU</span></div>
+        <p class="tagline">Sipariş düştü, saat işliyor. Arabayı kap, reyonları tara, poşetle ve kapıdaki motorcuya yetiştir!</p>
+        <div class="title-grid">
+          <div class="panel-card">
+            <h3>Atmosfer</h3>
+            <div class="moods">${moods}</div>
+            <h3>Grafik</h3>
+            <div class="seg" data-group="quality">
+              <button data-q="high" class="on">Yüksek</button><button data-q="medium">Orta</button><button data-q="low">Düşük</button>
+            </div>
+          </div>
+          <div class="panel-card howto">
+            <h3>Nasıl oynanır?</h3>
+            <ol>
+              <li>Telefonuna gelen siparişi <b>kabul et</b>.</li>
+              <li>Reyonları gez, ürüne nişan al ve <kbd>Sol tık</kbd> ile al.</li>
+              <li>Aşağı, arabadaki poşetlere bak ve <kbd>Sol tık</kbd> ile poşete koy.</li>
+              <li>Benzer ürünlere dikkat! Yanlış ürünü <kbd>Sağ tık</kbd> ile geri bırak.</li>
+              <li>Bitince <kbd>F</kbd> ile siparişi tamamla, motorcu gelsin.</li>
+              <li>Kapıdaki motorcuya bak ve <kbd>E</kbd> ile teslim et!</li>
+            </ol>
+          </div>
         </div>
-        <div>
-          <h3>Nasıl oynanır?</h3>
-          <ol class="howto">
-            <li><kbd>W</kbd><kbd>S</kbd> ileri/geri, <kbd>A</kbd><kbd>D</kbd> dönüş (yerinde dönebilir), <kbd>Space</kbd> fren.</li>
-            <li>Raf önüne yaklaş, sarı çerçeve çıkınca <kbd>E</kbd> ile ürünü al. Ürün alt kasaya düşer.</li>
-            <li><kbd>Tab</kbd> ile araba panelini aç: poşeti aç, ürünleri poşetlere yerleştir.</li>
-            <li>Benzer ürünlere dikkat! (ör. <i>Yarım Yağlı</i> ≠ <i>Tam Yağlı</i>)</li>
-            <li>Her şey poşetteyse <b>Siparişi Tamamla</b> → motorcu gelir.</li>
-            <li>Arabayı girişteki <b>Teslimat Noktası</b>'na sür ve <kbd>E</kbd> ile teslim et.</li>
-          </ol>
-        </div>
+        <button class="btn primary big" data-act="start">Vardiyaya Başla</button>
+        <div class="credits">3D modeller: KayKit (Kay Lousberg, CC0) · Yazı tipleri: DynaPuff, Nunito (OFL) · Gökyüzü: Poly Haven (CC0)</div>
       </div>`;
-    const btn = h('button', 'btn primary big', 'Vardiyayı Başlat');
-    btn.addEventListener('click', () => this.cb.start());
-    box.appendChild(btn);
-    s.appendChild(box);
+    s.addEventListener('click', (e) => {
+      const t = e.target as HTMLElement;
+      const mood = t.closest('[data-mood]') as HTMLElement | null;
+      if (mood) {
+        this.selectedMood = mood.dataset.mood as MoodId;
+        s.querySelectorAll('.mood-card').forEach((c) => c.classList.toggle('on', c === mood));
+        this.cb.setMood(this.selectedMood);
+      }
+      const q = t.closest('[data-q]') as HTMLElement | null;
+      if (q) {
+        this.selectedQuality = q.dataset.q as Quality;
+        s.querySelectorAll('[data-q]').forEach((c) => c.classList.toggle('on', c === q));
+      }
+      if (t.closest('[data-act=start]')) this.cb.start(this.selectedMood, this.selectedQuality);
+    });
     return s;
   }
 
-  private buildScreen(title: string, body: string, buttons: [string, () => void, string][]): HTMLDivElement {
-    const s = h('div', 'screen hidden');
-    const box = h('div', 'screen-box');
-    box.appendChild(h('h1', '', title));
-    box.appendChild(h('div', 'screen-body', body));
-    const row = h('div', 'btn-row');
-    for (const [label, fn, cls] of buttons) {
-      const b = h('button', `btn ${cls}`, label);
-      b.addEventListener('click', fn);
-      row.appendChild(b);
-    }
-    box.appendChild(row);
-    s.appendChild(box);
+  setTitleQuality(q: Quality) {
+    this.selectedQuality = q;
+    this.screens.title.querySelectorAll('[data-q]').forEach((c) => c.classList.toggle('on', (c as HTMLElement).dataset.q === q));
+  }
+
+  private buildPause(): HTMLDivElement {
+    const s = h('div', 'screen pause hidden');
+    s.innerHTML = `<div class="screen-box"><h1>Mola</h1><p>Süre durdu. Hazır olduğunda devam et.</p>
+      <div class="moods small">${(Object.keys(MOODS) as MoodId[]).map((id) => `<button class="mood-card" data-mood="${id}"><span class="mood-art mood-${id}"></span><b>${esc(MOODS[id].name)}</b></button>`).join('')}</div>
+      <div class="btn-row"><button class="btn primary" data-act="resume">Devam Et</button><button class="btn" data-act="restart">Yeniden Başla</button></div></div>`;
+    s.addEventListener('click', (e) => {
+      const t = e.target as HTMLElement;
+      const mood = t.closest('[data-mood]') as HTMLElement | null;
+      if (mood) this.cb.setMood(mood.dataset.mood as MoodId);
+      if (t.closest('[data-act=resume]')) this.cb.resume();
+      if (t.closest('[data-act=restart]')) this.cb.restart();
+    });
     return s;
   }
 
-  showScreen(name: 'intro' | 'pause' | 'won' | 'lost' | null) {
+  private buildEnd(kind: 'won' | 'lost'): HTMLDivElement {
+    const s = h('div', `screen end ${kind} hidden`);
+    s.innerHTML = `<div class="screen-box"><div class="end-body"></div><div class="btn-row"><button class="btn primary" data-act="restart">${kind === 'won' ? 'Bir Vardiya Daha' : 'Tekrar Dene'}</button></div></div>`;
+    s.addEventListener('click', (e) => {
+      if ((e.target as HTMLElement).closest('[data-act=restart]')) this.cb.restart();
+    });
+    return s;
+  }
+
+  showScreen(name: 'loading' | 'title' | 'pause' | 'won' | 'lost' | null) {
     for (const [k, el] of Object.entries(this.screens)) el.classList.toggle('hidden', k !== name);
-    this.root.classList.toggle('screen-open', name !== null);
+    this.root.classList.toggle('menu-open', name !== null);
   }
 
-  showWon(timeLeft: number, stars: number, mistakes: number, penalties: number) {
-    const s = this.screens.won;
-    s.querySelector('h1')!.textContent = 'Sipariş Teslim Edildi!';
-    s.querySelector('.screen-body')!.innerHTML = `
-      <div class="stars">${[1, 2, 3].map((i) => `<span class="${i <= stars ? 'on' : ''}">★</span>`).join('')}</div>
-      <p>Motorcu siparişi aldı ve yola çıktı. Harika iş!</p>
+  showWon(data: { timeLeft: number; stars: number; mistakes: number; penalties: number; bestCombo: number; score: number }) {
+    const review = data.stars === 3 ? 'Işık hızında geldi, yumurtalar sapasağlam! Teşekkürler 💚' : data.stars === 2 ? 'Her şey tamamdı, eline sağlık 🙂' : 'Biraz geç geldi ama sorun değil.';
+    this.screens.won.querySelector('.end-body')!.innerHTML = `
+      <div class="end-badge">TESLİM EDİLDİ</div>
+      <h1>Sipariş ${esc(this.order.id)} yolda!</h1>
+      <div class="stars">${[1, 2, 3].map((i) => `<span class="${i <= data.stars ? 'on' : ''}" style="animation-delay:${i * 0.18}s">★</span>`).join('')}</div>
+      <div class="review"><b>${esc(this.order.customer)}</b> <span>${'★'.repeat(data.stars + 2)}</span><p>“${esc(review)}”</p></div>
       <div class="stats">
-        <div><b>${formatTime(timeLeft)}</b><span>kalan süre</span></div>
-        <div><b>${mistakes}</b><span>hatalı ürün</span></div>
-        <div><b>${penalties} sn</b><span>ceza</span></div>
+        <div><b>${data.score}</b><span>puan</span></div>
+        <div><b>${formatTime(data.timeLeft)}</b><span>kalan süre</span></div>
+        <div><b>x${data.bestCombo}</b><span>en iyi seri</span></div>
+        <div><b>${data.mistakes}</b><span>hatalı ürün</span></div>
       </div>`;
   }
 
-  showLost(bagged: number, total: number, phaseNote: string) {
-    const s = this.screens.lost;
-    s.querySelector('h1')!.textContent = 'Süre Doldu!';
-    s.querySelector('.screen-body')!.innerHTML = `<p>${esc(phaseNote)}</p><div class="stats"><div><b>${bagged}/${total}</b><span>poşetlenen ürün</span></div></div>`;
+  showLost(bagged: number, total: number, note: string) {
+    this.screens.lost.querySelector('.end-body')!.innerHTML = `
+      <div class="end-badge red">SÜRE DOLDU</div>
+      <h1>Sipariş iptal edildi</h1>
+      <p>${esc(note)}</p>
+      <div class="stats"><div><b>${bagged}/${total}</b><span>poşetlenen ürün</span></div></div>`;
+  }
+
+  // ------------------------------------------------------------ in-game bits
+  setPlaying(on: boolean) {
+    this.timer.classList.toggle('hidden', !on);
+    this.phone.classList.toggle('hidden', !on);
+    this.objective.classList.toggle('hidden', !on);
+    this.crosshair.classList.toggle('hidden', !on);
+  }
+
+  showHint(on: boolean) {
+    this.hint.classList.toggle('hidden', !on);
   }
 
   setTimer(seconds: number, running: boolean) {
-    this.timerValue.textContent = formatTime(seconds);
+    const v = this.timer.querySelector('.t-val')!;
+    const txt = formatTime(seconds);
+    if (v.textContent !== txt) v.textContent = txt;
     this.timer.classList.toggle('warn', seconds <= 60 && seconds > 20);
     this.timer.classList.toggle('danger', seconds <= 20);
     this.timer.classList.toggle('paused', !running);
   }
 
-  flashTimerPenalty(sec: number) {
+  penalty(sec: number) {
     const el = h('div', 'penalty', `-${sec} sn`);
     this.timer.appendChild(el);
-    setTimeout(() => el.remove(), 1200);
+    setTimeout(() => el.remove(), 1300);
   }
 
   setObjective(html: string) {
     if (this.objective.innerHTML !== html) this.objective.innerHTML = html;
+    this.objective.classList.toggle('empty', !html);
   }
 
-  setPrompt(html: string | null) {
-    this.prompt.classList.toggle('hidden', !html);
-    if (html && this.prompt.innerHTML !== html) this.prompt.innerHTML = html;
+  setCrosshair(state: 'none' | 'product' | 'bag' | 'bad' | 'courier') {
+    this.crosshair.className = `crosshair ${state}`;
   }
 
-  setFloatLabel(text: string | null, x = 0, y = 0) {
-    this.floatLabel.classList.toggle('hidden', !text);
-    if (!text) return;
-    if (this.floatLabel.innerHTML !== text) this.floatLabel.innerHTML = text;
-    this.floatLabel.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px) translate(-50%, -100%)`;
+  setHover(html: string | null) {
+    this.hoverCard.classList.toggle('hidden', !html);
+    if (html && this.hoverCard.innerHTML !== html) this.hoverCard.innerHTML = html;
+  }
+
+  setHeld(pid: string | null) {
+    this.heldCard.classList.toggle('hidden', !pid);
+    if (!pid) return;
+    const p = getProduct(pid);
+    const html = `${this.thumb(pid)}<div><small>ELİNDE</small><b>${esc(p.name)}</b><span>Poşete bak + <kbd>Sol tık</kbd> · Geri bırak <kbd>Sağ tık</kbd></span></div>`;
+    if (this.heldCard.innerHTML !== html) this.heldCard.innerHTML = html;
   }
 
   toast(text: string, kind: 'info' | 'ok' | 'err' = 'info', ms = 2600) {
     const t = h('div', `toast ${kind}`, esc(text));
-    this.toastBox.appendChild(t);
-    while (this.toastBox.children.length > 4) this.toastBox.firstChild?.remove();
+    this.toasts.appendChild(t);
+    while (this.toasts.children.length > 3) this.toasts.firstChild?.remove();
     setTimeout(() => t.classList.add('out'), ms - 300);
     setTimeout(() => t.remove(), ms);
   }
 
-  updateOrder(session: OrderSession) {
-    const prog = session.progress();
-    const sig = JSON.stringify([prog, this.thumbs ? Object.keys(this.thumbs).length : 0]);
-    if (sig === this.lastOrderSig) return;
-    this.lastOrderSig = sig;
-    const total = session.totalRequired();
-    const done = session.totalBagged();
-    this.orderProgress.innerHTML = `<div class="bar"><i style="width:${(done / total) * 100}%"></i></div><span>${done}/${total} poşette</span>`;
-    this.orderList.innerHTML = prog
-      .map((l) => {
-        const p = getProduct(l.productId);
-        const sec = SECTIONS[p.section];
-        const complete = l.bagged >= l.qty;
-        const inCart = l.inTray > 0 && !complete;
-        return `<div class="line ${complete ? 'done' : ''}">
-          ${this.thumb(p.id)}
-          <div class="line-text"><div class="line-name">${esc(p.name)}</div>
-          <div class="line-sec" style="--c:${sec.color}">${esc(sec.name)}</div></div>
-          <div class="line-qty">${inCart ? '<span class="in-tray" title="Kasada, poşetlenmeyi bekliyor">kasada</span>' : ''}${complete ? '✔' : `${l.bagged}/${l.qty}`}</div>
-        </div>`;
-      })
-      .join('');
+  popup(text: string, cls = '') {
+    const p = h('div', `popup ${cls}`, esc(text));
+    this.popups.appendChild(p);
+    setTimeout(() => p.remove(), 1300);
   }
 
-  updateTrayBadge(session: OrderSession) {
-    const n = session.tray.length;
-    const html = `<span class="tb-icon">🛒</span><span>Kasa <b>${n}/${session.order.trayCapacity}</b></span><kbd>Tab</kbd>`;
-    if (this.trayBadge.innerHTML !== html) this.trayBadge.innerHTML = html;
-    this.trayBadge.classList.toggle('full', n >= session.order.trayCapacity);
-    this.trayBadge.classList.toggle('has', n > 0);
+  // ------------------------------------------------------------ phone
+  setPhoneScreen(s: PhoneScreen) {
+    this.screen = s;
+    this.sig = '';
+    this.phone.classList.toggle('ringing', s === 'incoming');
+    if (s === 'incoming' || s === 'courier' || s === 'delivered') this.setPhoneOpen(true);
   }
 
-  setPanelOpen(open: boolean) {
-    this.panelOpen = open;
-    this.panel.classList.toggle('hidden', !open);
-    this.root.classList.toggle('panel-open', open);
-    if (!open) this.selectedTray = -1;
-    this.lastPanelSig = '';
+  setPhoneOpen(open: boolean) {
+    this.phoneOpen = open;
+    this.phone.classList.toggle('open', open);
+    this.sig = '';
   }
 
-  updatePanel(session: OrderSession) {
-    if (!this.panelOpen) return;
-    if (this.selectedTray >= session.tray.length) this.selectedTray = session.tray.length - 1;
-    if (this.selectedTray < 0 && session.tray.length) this.selectedTray = 0;
-    const sig = JSON.stringify([session.tray, session.bags, this.selectedTray, session.closed]);
-    if (sig === this.lastPanelSig) return;
-    this.lastPanelSig = sig;
+  setClock(text: string) {
+    if (this.phoneClock.textContent !== text) this.phoneClock.textContent = text;
+  }
 
-    // tray
-    this.trayBox.innerHTML = '';
-    for (let i = 0; i < session.order.trayCapacity; i++) {
-      const pid = session.tray[i];
-      const slot = h('div', `slot ${pid ? 'filled' : 'empty'} ${i === this.selectedTray ? 'selected' : ''}`);
-      if (pid) {
-        const p = getProduct(pid);
-        slot.innerHTML = `${this.thumb(pid, 'thumb big')}<div class="slot-name">${esc(p.name)}</div>`;
-        slot.draggable = true;
-        slot.dataset.index = String(i);
-        slot.addEventListener('click', () => {
-          this.selectedTray = i;
-          this.lastPanelSig = '';
-          this.updatePanel(session);
-        });
-        slot.addEventListener('dragstart', (e) => {
-          e.dataTransfer?.setData('text/plain', String(i));
-          this.selectedTray = i;
-        });
-        const del = h('button', 'slot-del', 'İade');
-        del.title = 'Ürünü rafa iade et (ceza yok)';
-        del.addEventListener('click', (e) => {
-          e.stopPropagation();
-          this.cb.discard(i);
-        });
-        slot.appendChild(del);
-      }
-      this.trayBox.appendChild(slot);
-    }
-
-    // bags
-    this.bagsBox.innerHTML = '';
-    session.bags.forEach((bag, bi) => {
-      const el = h('div', `bag ${bag.open ? 'open' : 'folded'} ${bag.closed ? 'closed' : ''}`);
-      el.style.setProperty('--bag', BAG_COLORS[bi]);
-      el.innerHTML = `<div class="bag-head"><span class="bag-num">${bi + 1}</span> Poşet ${bi + 1}<span class="bag-cap">${bag.items.length}/${session.order.bagCapacity}</span></div>`;
-      if (!bag.open) {
-        const ob = h('button', 'btn small', 'Poşeti Aç');
-        ob.addEventListener('click', (e) => {
-          e.stopPropagation();
-          this.cb.openBag(bi);
-        });
-        el.appendChild(ob);
-      } else {
-        const items = h('div', 'bag-items');
-        bag.items.forEach((pid, ii) => {
-          const it = h('div', 'bag-item', `${this.thumb(pid)}<span>${esc(getProduct(pid).name)}</span>`);
-          if (!session.closed) {
-            const back = h('button', 'bag-item-back', '↩');
-            back.title = 'Kasaya geri al';
-            back.addEventListener('click', (e) => {
-              e.stopPropagation();
-              this.cb.unbag(bi, ii);
-            });
-            it.appendChild(back);
-          }
-          items.appendChild(it);
-        });
-        if (!bag.items.length) items.appendChild(h('div', 'bag-empty', 'Boş — ürün bırak'));
-        el.appendChild(items);
-      }
-      el.addEventListener('click', () => {
-        if (!bag.open) {
-          this.cb.openBag(bi);
-          return;
+  updatePhone(session: OrderSession, timeLeft: number, heldPid: string | null) {
+    const sig = JSON.stringify([this.screen, this.phoneOpen, session.progress(), session.bags, heldPid, Math.ceil(timeLeft), Math.ceil(this.courierEta), Object.keys(this.thumbs).length]);
+    if (sig === this.sig) return;
+    this.sig = sig;
+    let html = '';
+    const o = this.order;
+    const total = o.lines.reduce((a, l) => a + getProduct(l.productId).price * l.qty, 0);
+    switch (this.screen) {
+      case 'incoming':
+        html = `
+          <div class="app-head brand"><span class="app-logo">Kapında!</span><span class="pill pulse">YENİ SİPARİŞ</span></div>
+          <div class="incoming">
+            <div class="ring-icon">🛎️</div>
+            <div class="inc-title">Sipariş ${esc(o.id)}</div>
+            <div class="inc-row"><span>👤 ${esc(o.customer)}</span><span>📍 ${o.distanceKm} km</span></div>
+            <div class="inc-addr">${esc(o.address)}</div>
+            <div class="inc-items">${o.lines.map((l) => this.thumb(l.productId, 'thumb sm')).join('')}</div>
+            <div class="inc-row big"><span>${o.lines.reduce((a, l) => a + l.qty, 0)} ürün</span><span>${formatPrice(total)}</span></div>
+            <div class="inc-note">💬 “${esc(o.note)}”</div>
+            <div class="inc-row"><span>⏱ Hazırlama süresi</span><b>${formatTime(o.timeLimit)}</b></div>
+            <button class="btn accept" data-act="accept">Kabul Et <kbd>Enter</kbd></button>
+          </div>`;
+        break;
+      case 'picking': {
+        const prog = session.progress();
+        const done = session.totalBagged();
+        const totalQ = session.totalRequired();
+        const can = session.canClose();
+        if (!this.phoneOpen) {
+          const next = prog.find((l) => l.bagged < l.qty);
+          html = `<div class="mini" data-act="toggle">
+            <div class="mini-top"><span class="app-logo sm">Kapında!</span><span class="mini-count">${done}/${totalQ}</span></div>
+            <div class="bar"><i style="width:${(done / totalQ) * 100}%"></i></div>
+            ${next ? `<div class="mini-next">${this.thumb(next.productId, 'thumb sm')}<div><small>SIRADAKİ</small><b>${esc(getProduct(next.productId).name)}</b><span>${esc(sectionLabel(next.productId))}</span></div></div>` : `<div class="mini-done">✅ Hepsi poşette! <kbd>F</kbd></div>`}
+            <div class="mini-foot"><kbd>Tab</kbd> listeyi aç</div></div>`;
+          break;
         }
-        if (this.selectedTray >= 0) this.cb.place(this.selectedTray, bi);
-      });
-      el.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        el.classList.add('drop');
-      });
-      el.addEventListener('dragleave', () => el.classList.remove('drop'));
-      el.addEventListener('drop', (e) => {
-        e.preventDefault();
-        el.classList.remove('drop');
-        const idx = Number(e.dataTransfer?.getData('text/plain'));
-        if (!Number.isNaN(idx)) this.cb.place(idx, bi);
-      });
-      this.bagsBox.appendChild(el);
-    });
-
-    const can = session.canClose();
-    this.closeBtn.disabled = !can.ok;
-    this.closeBtn.title = can.ok ? '' : can.reason;
-    this.closeBtn.classList.toggle('ready', can.ok);
+        html = `
+          <div class="app-head"><span class="app-logo sm">Kapında!</span><span class="pill">${esc(o.id)} · ${esc(o.customer)}</span></div>
+          <div class="prog"><div class="bar"><i style="width:${(done / totalQ) * 100}%"></i></div><span>${done}/${totalQ} poşette</span></div>
+          <div class="lines">${prog
+            .map((l) => {
+              const p = getProduct(l.productId);
+              const complete = l.bagged >= l.qty;
+              const inHand = heldPid === l.productId;
+              const state = complete ? '<span class="st ok">✔</span>' : inHand ? '<span class="st hand">✋</span>' : `<span class="st">${l.bagged}/${l.qty}</span>`;
+              return `<div class="line ${complete ? 'done' : ''}">${this.thumb(l.productId)}<div class="lt"><b>${l.qty > 1 ? `${l.qty}× ` : ''}${esc(p.name)}</b><span style="--c:${SECTIONS[p.section].color}">${esc(sectionLabel(l.productId))}</span></div>${state}</div>`;
+            })
+            .join('')}</div>
+          <div class="bags-mini">${session.bags
+            .map((b, i) => `<div class="bm ${b.open ? 'open' : ''}" style="--b:${BAG_COLORS[i]}"><b>${i + 1}</b><span>${b.open ? `${b.items.length}/${o.bagCapacity}` : 'kapalı'}</span></div>`)
+            .join('')}</div>
+          <div class="rules-mini">${RULES.map((r) => `• ${esc(r)}`).join('<br>')}</div>
+          <button class="btn complete ${can.ok ? 'ready' : ''}" data-act="complete" ${can.ok ? '' : 'disabled'}>Siparişi Tamamla <kbd>F</kbd></button>
+          <div class="mini-foot" data-act="toggle"><kbd>Tab</kbd> küçült</div>`;
+        break;
+      }
+      case 'courier': {
+        const eta = Math.max(0, Math.ceil(this.courierEta));
+        const k = Math.max(0, Math.min(1, 1 - this.courierEta / 12));
+        html = `
+          <div class="app-head brand"><span class="app-logo">Kapında!</span><span class="pill green">HAZIR</span></div>
+          <div class="map">
+            <div class="road r1"></div><div class="road r2"></div><div class="road r3"></div>
+            <div class="store-pin">🏪</div>
+            <div class="scooter" style="left:${8 + k * 62}%;top:${78 - k * 46}%">🛵</div>
+          </div>
+          <div class="courier-card">
+            <div class="avatar">🧑‍🦰</div>
+            <div><b>Motorcu ${esc(o.courier)}</b><span>${eta > 0 ? `Mağazaya ${eta} sn` : 'Kapıda bekliyor!'}</span></div>
+          </div>
+          <div class="courier-tip">${eta > 0 ? 'Arabayı girişteki <b>yeşil teslimat noktasına</b> götür.' : 'Motorcuya bak ve <kbd>E</kbd> ile teslim et!'}</div>`;
+        break;
+      }
+      case 'delivered':
+        html = `<div class="app-head brand"><span class="app-logo">Kapında!</span><span class="pill green">TESLİM</span></div>
+          <div class="delivered"><div class="big-check">✓</div><b>Sipariş yola çıktı!</b><span>${esc(o.customer)} bilgilendirildi.</span></div>`;
+        break;
+      case 'failed':
+        html = `<div class="app-head brand"><span class="app-logo">Kapında!</span><span class="pill red">İPTAL</span></div>
+          <div class="delivered"><div class="big-check red">✕</div><b>Süre doldu</b><span>Sipariş iptal edildi.</span></div>`;
+        break;
+      default:
+        html = `<div class="app-head brand"><span class="app-logo">Kapında!</span></div><div class="waiting">Sipariş bekleniyor…</div>`;
+    }
+    this.phoneScreen.innerHTML = html;
+    void timeLeft;
   }
+}
+
+export function sectionLabel(pid: string): string {
+  const s = SECTIONS[getProduct(pid).section];
+  return s.aisle > 0 ? `Reyon ${s.aisle} · ${s.name}` : s.name;
 }

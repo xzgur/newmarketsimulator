@@ -1,10 +1,11 @@
-# Market Sipariş Toplama — 1 Siparişlik Demo
+# Market Koşusu
 
-Three.js + Vite + TypeScript ile yapılmış, tarayıcıda oynanan 3D market sipariş toplama oyunu.
+Three.js + Vite + TypeScript ile yapılmış, birinci şahıs (FPS) bakışlı bir market sipariş toplama oyunu.
 
-Online sipariş **#1042** geldi. Robot toplama arabasını sürüp ürünleri farklı reyonlardan topluyorsun,
-arabanın üst kasasındaki poşetlere yerleştiriyorsun. Siparişi kapatınca motorcu geliyor. Arabayı girişteki
-**Teslimat Noktası**'na götürüp siparişi teslim ediyorsun. Bunların hepsini **5 dakika** içinde bitirmen gerekiyor.
+Vardiyan başlar başlamaz arabaya monteli telefonun çalar: **Kapında!** uygulamasına online sipariş **#1042** düşmüştür.
+Siparişi kabul edince 5 dakikalık süre başlar. Klasik bir market arabasını iterek canlı marketin reyonlarında
+dolaşırsın. Ürüne nişan alıp elinle alır, arabadaki poşetleri açıp ürünleri yerleştirirsin. Sipariş tamamlanınca
+motorcu scooter'la gelir, kapıdan girip seni bekler. Teslimat noktasına gidip siparişi teslim edince vardiya biter.
 
 ## Çalıştırma
 
@@ -15,105 +16,119 @@ npm run build      # typecheck + production build → dist/
 npm run preview    # build'i sunar
 npm test           # birim testleri (vitest)
 npm run typecheck
+npm run playtest   # dev server açıkken: uçtan uca otomatik oynanış testi
 ```
 
-Zayıf GPU'larda `?q=low` parametresiyle gölgeler ve antialias kapatılır: `http://localhost:5173/?q=low`.
+Grafik kalitesi başlık ekranından seçilir (Yüksek / Orta / Düşük). URL parametreleriyle de verilebilir:
+`?q=low|medium|high&mood=day|sunset|night`.
 
 ## Kontroller
 
-| Tuş | İşlev |
+| Girdi | İşlev |
 | --- | --- |
-| `W` `S` / ok tuşları | İleri / geri |
-| `A` `D` | Dönüş (robot yerinde dönebilir) |
-| `Space` | Fren |
-| `E` / `Enter` | Raftan ürün al · motorcuya teslim et |
-| `Tab` (veya `Q`, ya da sağ alttaki kasa butonu) | Araba paneli (poşetleme) |
-| `1` `2` `3` | Panelde seçili ürünü 1./2./3. poşete koy |
-| `F` | Panelde siparişi tamamla |
-| `C` | Takip kamerası / üstten kamera |
-| `Esc` / `P` | Duraklat |
+| `W` `A` `S` `D` | Yürü / yan adım (araba önünde) |
+| Fare (ya da sürükle) | Etrafa bak |
+| `←` `→` | Klavyeyle dön |
+| `Shift` | Koş |
+| `Sol tık` / `E` | Raftan ürün al · nişan aldığın poşete koy · katlı poşeti aç · motorcuya teslim et |
+| `Sağ tık` / `Q` | Elindeki ürünü geri bırak (fırlat) |
+| `1` `2` `3` | Elindeki ürünü doğrudan 1./2./3. poşete koy |
+| `Enter` | Gelen siparişi kabul et |
+| `Tab` | Telefondaki sipariş listesini aç / küçült |
+| `F` | Siparişi tamamla (motorcuyu çağır) |
+| `Esc` | Duraklat (atmosfer seçimi de burada) |
 | `M` | Ses aç/kapat |
 
 ## Oyun döngüsü
 
 ```
-Intro ─► Toplama (playing) ─► Motorcu yolda (courierArriving) ─► Motorcu bekliyor (awaitingHandover)
-              │                                                           │  E (teslimat noktasında)
-              │ süre biter                                                ▼
-              └──────────────────────────► Kaybettin (lost)        Teslimat (handover) ─► Kazandın (won)
+Başlık ─► Telefon çalıyor (incoming) ─Enter─► Toplama (playing, süre işler)
+            ─F─► Motorcu yolda (courierArriving) ─► Motorcu kapıda (awaitingHandover)
+            ─E─► Teslimat (handover) ─► Kazandın (won, 1-3 yıldız + puan)
+   (süre biterse herhangi bir anda) ─► Kaybettin (lost)
 ```
 
-1. **Topla:** Raf önüne yaklaşınca raf sarı çerçeveyle vurgulanır ve ürünün adı görünür. `E` ile aldığın ürün alt
-   kasaya (6 ürünlük) düşer. Benzer ürünlere dikkat et: Tam Yağlı / Yarım Yağlı / Laktozsuz süt, Patates / Mısır
-   cipsi, Bulaşık / Çamaşır deterjanı, Su 5L / 1,5L vb.
-2. **Poşetle:** `Tab` ile paneli aç, poşeti aç, ürünü seç ve poşete tıkla (sürükle-bırak da çalışır). Kurallar:
-   - Temizlik ürünleri gıdayla aynı poşete konmaz.
-   - Yumurta, ağır ürünlerle (5L su) aynı poşete konmaz.
-   - Bir poşete en fazla 5 ürün sığar.
-   - Siparişte olmayan ürünü (ya da fazla adedi) poşete koymaya çalışırsan **5 saniye ceza** alırsın. Yanlış ürünü
-     "İade" butonuyla cezasız geri bırakabilirsin.
-3. **Kapat:** Bütün ürünler poşetteyse ve kasa boşsa **Siparişi Tamamla**. Poşetlerin ağzı bağlanır, motorcu çağrılır.
-4. **Teslim et:** Motorcu scooter'la gelip kapıdan içeri girer. Arabayı yeşil **Teslimat Noktası**'na sür ve `E`'ye bas.
-   Motorcu poşetleri alıp yola çıkınca oyunu kazanırsın. Kalan süreye ve hatalara göre 1–3 yıldız alırsın.
+- **Toplama:** Elinde bir seferde tek ürün taşıyabilirsin. Benzer ürünlere dikkat et:
+  Tam Yağlı / Yarım Yağlı / Laktozsuz süt, Köy 10'lu / 6'lı yumurta, Beyaz peynir / Kaşar,
+  Patates / Mısır cipsi, Su 5L / 1,5L, Bulaşık / Çamaşır deterjanı gibi.
+- **Poşetleme kuralları:**
+  - Temizlik ürünleri gıdayla aynı poşete konmaz.
+  - Yumurta, ağır ürünlerle (5L su) aynı poşete konmaz.
+  - Bir poşete en fazla 5 ürün sığar.
+  - Siparişte olmayan ürünü (ya da fazla adedi) poşete koymaya çalışırsan **5 sn ceza** alırsın.
+    Yanlış ürünü sağ tıkla cezasız geri bırakabilirsin.
+- **Seri ve puan:** Doğru ürünleri peş peşe 14 saniye içinde poşetlersen seri (x2, x3…) büyür. Sonda kalan süre
+  bonus puana dönüşür. Yıldızlar kalan süreye ve hata sayısına göre verilir.
 
-Süre dolarsa (ceza saniyeleri de süreden düşer) oyun biter. **Tekrar Dene** ile sahne tamamen sıfırlanır.
+## Canlı market
+
+- **Müşteriler:** 8 müşteri reyonlar arasında gezer, raflara bakıp ürün alır ve sepet taşır. Konuşma balonlarıyla
+  laf atar ("Ooo kampanya!"), çarparsan söylenir ("Pardon!"). Kasalarda kasiyerler çalışır.
+- **Mağaza:** Kasalarda yürüyen bant döner, mağaza anonsları yapılır.
+- **Sokak:** Vitrinden arabaların geçtiği sokak görünür. Motorcu scooter'la gelip park eder ve otomatik kapıdan girer.
+- **Ses:** Lo-fi müzik, market uğultusu, araba tekerleği tıkırtısı, barkod bipleri, poşet hışırtısı ve telefon zil
+  sesinin hepsi WebAudio ile kodda üretiliyor.
+- **Atmosfer:** Öğle Telaşı, Gün Batımı ve Gece Vardiyası. Her biri farklı gökyüzü (HDR), ışık, sokak lambası ve
+  renk düzeniyle geliyor.
 
 ## Mimari
 
 ```
 src/
-  data/            # Saf veri (Three.js yok, test edilebilir)
-    products.ts    #   48 ürün: reyon, şekil, renk, oyun etiketleri (food/chemical/heavy/fragile)
-    order.ts       #   Demo siparişi (#1042), süre, poşet/kasa kapasiteleri
-    layout.ts      #   Market planı: reyonlar, raf kolonları (Display), çarpışma kutuları, tabelalar,
-                   #   başlangıç / teslimat / motorcu noktaları, raf etkileşim bölgesi hesabı
-  logic/           # Saf oyun mantığı (Three.js yok, birim testli)
-    collision.ts   #   Daire–AABB itme çözümü
-    cartPhysics.ts #   Diferansiyel sürüşlü robot araba kinematiği
-    order.ts       #   OrderSession: kasa, poşetler, kurallar, ceza, tamamlanma
-    gameFlow.ts    #   Faz durum makinesi + geri sayım + yıldız hesabı
-  render/          # Three.js görselleri
-    store.ts       #   Market binası, reyonlar, buzdolapları, manav tezgahı, kasa, kapılar, tabelalar,
-                   #   InstancedMesh ile raflardaki ürünler, vurgulama, teslimat işareti
-    productMeshes.ts # Prosedürel low-poly ürün modelleri (malzemeye göre birleştirilmiş tek geometri)
-    cart.ts        #   Referans görselden esinlenen robot toplama arabası (LED şeritler, 2 kasa, 3 poşet)
-    courier.ts     #   Scooter + motorcu, senaryolu animasyon (gel → içeri yürü → bekle → al → git)
-    batch.ts       #   Statik geometriyi malzemeye göre birleştirme (draw call optimizasyonu)
-    textures.ts    #   Canvas ile üretilen etiket, tabela, fiyat etiketi atlası, zemin dokuları
-    thumbnails.ts  #   HUD ikonları: 3D ürün modellerinden render edilir
-  ui/
-    hud.ts         #   Sipariş listesi, sayaç, hedef satırı, uyarılar, araba paneli, ekranlar
-    minimap.ts     #   Reyon renkli mini harita
-  audio.ts         # WebAudio ile sentezlenen ses efektleri (harici dosya yok)
-  input.ts         # Klavye durumu + tek seferlik aksiyonlar
-  game.ts          # Orkestratör: döngü, kamera, mantık ↔ görsel ↔ UI bağlantısı
-tests/logic.test.ts  # Sipariş kuralları, plan erişilebilirliği, fizik, faz makinesi
-scripts/playtest.mjs # Playwright ile uçtan uca otomatik oynanış testi
+  data/                 # Saf veri (Three.js yok, test edilebilir)
+    products.ts         #   64 ürün: reyon, şekil, kurgusal marka/etiket, fiyat, oyun etiketleri
+    order.ts            #   Sipariş #1042 (uygulamadaki müşteri, adres, not, süre, poşet kuralları)
+    layout.ts           #   Market planı: 6 reyon + uç standlar, soğutucular, fırın, içecek, manav,
+                        #   kasalar, dekor, çarpışma kutuları, müşteri yol ağı (nav graph + Dijkstra)
+  logic/                # Saf oyun mantığı (birim testli)
+    player.ts           #   FPS hareket: oyuncu + önündeki araba için iki daireli çarpışma, müşteriler
+    collision.ts        #   Daire–AABB itme
+    order.ts            #   OrderSession: el, poşetler, kurallar, ceza, tamamlanma
+    gameFlow.ts         #   Faz durum makinesi + süre + yıldız
+  render/
+    assets.ts           #   KayKit GLB paketlerini yükler, prop klonlar, karakter kıyafetlerini yeniden boyar
+    store.ts            #   Market binası, reyonlar, ışıklar, tabelalar, InstancedMesh ürünler, hover efekti
+    productMeshes.ts    #   KayKit tarzı ürün modelleri (+ KayKit sebzeleri), malzemeye göre birleştirilmiş
+    cartModel.ts        #   Klasik tel market arabası + içindeki 3 poşet (açılma/bağlanma animasyonu)
+    hands.ts            #   Birinci şahıs kollar: araba sapını tutar, ürünü kaldırır
+    people.ts           #   Müşteri yapay zekası (yol bulma, raf gezme, tepkiler) + kasiyerler
+    courier.ts          #   Motorcu + scooter senaryosu
+    outside.ts          #   Sokak: binalar, yol, trafik, sokak lambaları
+    mood.ts             #   Atmosferler: HDR gökyüzü, güneş, armatürler, nokta ışıklar, renk düzeni
+    post.ts             #   GTAO + Bloom + ACES + renk düzeni/vinyet/grain + SMAA
+    particles.ts        #   Parıltı ve konfeti
+    textures.ts         #   Canvas dokuları: ürün etiketleri (ikonlu), reyon tabelaları, fiyat etiketi atlası…
+    batch.ts            #   Statik geometriyi malzemeye göre birleştirme
+    thumbnails.ts       #   Uygulama/HUD ikonları 3D modellerden render edilir
+  ui/hud.ts             # Kapında! telefon uygulaması, nişangah, kartlar, sayaç, menüler
+  audio.ts              # Prosedürel ses + müzik
+  input.ts              # Klavye + fare (pointer lock, sürükleyerek bakma yedeği)
+  game.ts               # Orkestratör
+tests/logic.test.ts     # Kurallar, plan erişilebilirliği, yol ağı, hareket, faz makinesi
+scripts/
+  fetch-assets.sh       # KayKit paketlerini GitHub'dan indirir (vendor/, git'e girmez)
+  build-assets.mjs      # Kullanılan modelleri public/models/*.glb olarak paketler
+  playtest.mjs          # Playwright ile uçtan uca oynanış testi (ekran görüntüleri: playtest-output/)
 ```
 
-**Asset yaklaşımı:** Bütün modeller (ürünler, raflar, araba, motorcu), dokular (etiketler, tabelalar, zemin) ve sesler
-kod içinde prosedürel üretiliyor. Bu sayede indirme, lisans ya da yükleme hatası riski yok ve demo tek başına
-çalışıyor. Ürün ikonları da aynı 3D modellerden render edildiği için listedeki ikon raftaki ürünle birebir aynı.
+## Hazır assetler ve lisanslar
 
-**Performans:** Statik sahne malzemeye göre birleştiriliyor, raflardaki ~2000 ürün ürün tipi başına tek
-`InstancedMesh` ile çiziliyor ve fiyat etiketleri tek bir doku atlasında toplanıyor. Böylece bir kare yaklaşık
-200 draw call tutuyor.
+| Asset | Kaynak | Lisans |
+| --- | --- | --- |
+| Sebze kasaları, sebzeler, ketçap/hardal, kağıt havlu, sütun, kaktüsler, koliler, menü panosu | KayKit Restaurant Bits + Furniture Bits (Kay Lousberg) | CC0 |
+| Sokak binaları, arabalar, sokak lambası, çalılar, yangın musluğu, bank, çöp konteyneri | KayKit City Builder Bits (Kay Lousberg) | CC0 |
+| Müşteriler, kasiyerler, motorcu (animasyonlu karakterler) | KayKit Character Pack: Adventurers (Kay Lousberg) | CC0 |
+| Gökyüzü HDR'ları | Poly Haven (three.js deposu üzerinden) | CC0 |
+| DynaPuff, Nunito yazı tipleri | Google Fonts | OFL (`public/fonts/OFL-*.txt`) |
 
-## Otomatik oynanış testi
+Ürün paketleri, market arabası, raflar, telefon arayüzü, motorcu kaskı/scooter'ı, tabelalar, etiketler ve tüm sesler
+kodla üretiliyor. Markalar kurgusal.
 
-```bash
-npm run dev
-npm run playtest                     # varsayılan: http://localhost:5173/?q=low
-```
+`public/models/*.glb` dosyaları depoda hazır geliyor. Yeniden üretmek için `bash scripts/fetch-assets.sh && node scripts/build-assets.mjs` çalıştırılır.
 
-Script oyunu gerçek arayüz üzerinden baştan sona oynar ve her adımın ekran görüntüsünü `playtest-output/` klasörüne kaydeder:
+## Performans
 
-- Klavyeyle sürüş, dönüş, fren ve rafa çarpma
-- Yanlış ürün alma: 5 sn ceza ve iade
-- 10 ürünün iki turda toplanması
-- Panelde tıklayarak poşetleme
-- Siparişi kapatma
-- Teslimat noktasına sürme, motorcunun gelmesi, teslim ve kazanma ekranı
-- Yeniden başlatma ve süre dolunca kaybetme
-
-Raflar arası ışınlanma ve simülasyonu deterministik adımlarla ilerletme için `window.__game` debug kancası kullanılır.
+- **Ürünler:** Raflardaki yaklaşık 7.500 ürün, ürün tipi başına tek bir `InstancedMesh` ile çiziliyor.
+- **Statik sahne:** Malzemeye göre birleştiriliyor ve fiyat etiketleri tek bir doku atlasında toplanıyor. Böylece
+  sahne yaklaşık 270 draw call ve 1M üçgen tutuyor.
+- **Düşük kalite:** Post-process ve gölgeleri kapatır, 1x piksel oranında çizer.

@@ -93,14 +93,14 @@ export class OrderSession {
   pick(productId: string): ActionResult {
     if (this.closed) return { ok: false, reason: 'Sipariş zaten kapatıldı.' };
     if (this.tray.length >= this.order.trayCapacity) {
-      return { ok: false, reason: 'Araba tepsisi dolu! Önce ürünleri poşetlere yerleştir (Tab).' };
+      return { ok: false, reason: 'Elin dolu! Önce elindekini bir poşete koy ya da geri bırak (sağ tık).' };
     }
     getProduct(productId); // validates id
     this.tray.push(productId);
     return { ok: true };
   }
 
-  /** Removes an item from the tray (put back / return). Free action. */
+  /** Removes the held item (put back on the shelf). Free action. */
   discard(trayIndex: number): ActionResult {
     if (trayIndex < 0 || trayIndex >= this.tray.length) return { ok: false, reason: 'Geçersiz ürün.' };
     this.tray.splice(trayIndex, 1);
@@ -125,10 +125,10 @@ export class OrderSession {
     const product = getProduct(pid);
     const need = this.requiredQty(pid);
     if (need === 0) {
-      return { ok: false, reason: `${product.name} siparişte yok! Ürünü iade et.`, penalty: WRONG_ITEM_PENALTY };
+      return { ok: false, reason: `${product.name} siparişte yok! Rafa geri bırak (sağ tık).`, penalty: WRONG_ITEM_PENALTY };
     }
     if (this.baggedCount(pid) >= need) {
-      return { ok: false, reason: `${product.name} için yeterli adet zaten poşette. Fazlasını iade et.`, penalty: WRONG_ITEM_PENALTY };
+      return { ok: false, reason: `${product.name} için yeterli adet zaten poşette. Fazlasını geri bırak.`, penalty: WRONG_ITEM_PENALTY };
     }
     if (bag.items.length >= this.order.bagCapacity) return { ok: false, reason: 'Bu poşet dolu.' };
     const conflict = bagConflict(product, bag.items.map(getProduct));
@@ -152,7 +152,7 @@ export class OrderSession {
     if (this.closed) return { ok: false, reason: 'Sipariş zaten kapatıldı.' };
     const bag = this.bags[bagIndex];
     if (!bag || itemIndex < 0 || itemIndex >= bag.items.length) return { ok: false, reason: 'Geçersiz seçim.' };
-    if (this.tray.length >= this.order.trayCapacity) return { ok: false, reason: 'Tepsi dolu.' };
+    if (this.tray.length >= this.order.trayCapacity) return { ok: false, reason: 'Elin dolu.' };
     const [pid] = bag.items.splice(itemIndex, 1);
     this.tray.push(pid);
     return { ok: true };
@@ -167,7 +167,7 @@ export class OrderSession {
     if (this.closed) return { ok: false, reason: 'Sipariş zaten kapatıldı.' };
     const missing = this.order.lines.filter((l) => this.baggedCount(l.productId) < l.qty);
     if (missing.length) return { ok: false, reason: `Eksik ürün var (${missing.length} kalem).` };
-    if (this.tray.length) return { ok: false, reason: 'Tepside sipariş dışı ürün kaldı, iade et.' };
+    if (this.tray.length) return { ok: false, reason: 'Elinde hâlâ bir ürün var, önce onu bırak.' };
     return { ok: true };
   }
 

@@ -1,18 +1,24 @@
-/** Game orchestrator: owns the scene, the loop and wires logic <-> views <-> UI. */
+/** Game orchestrator: first-person loop, interaction, flow and presentation. */
 import * as THREE from 'three';
-import { buildLayout, findDisplayAt, type Display, type StoreLayout } from './data/layout';
+import { buildLayout, type Display, type StoreLayout } from './data/layout';
 import { DEMO_ORDER } from './data/order';
-import { getProduct, SECTIONS } from './data/products';
-import { CART, createCart, stepCart, type CartState } from './logic/cartPhysics';
+import { getProduct, formatPrice } from './data/products';
+import { createPlayer, look, PLAYER, speedOf, stepPlayer, type PlayerState } from './logic/player';
 import { GameFlow } from './logic/gameFlow';
 import { OrderSession } from './logic/order';
+import { loadAssets } from './render/assets';
 import { StoreView } from './render/store';
-import { CartView } from './render/cart';
+import { OutsideView } from './render/outside';
+import { ShoppingCart } from './render/cartModel';
+import { Hands } from './render/hands';
+import { People } from './render/people';
 import { CourierView } from './render/courier';
+import { Particles } from './render/particles';
+import { Post, type Quality } from './render/post';
+import { Lighting, MOODS, type MoodId } from './render/mood';
 import { createProductMesh } from './render/productMeshes';
 import { renderThumbnails } from './render/thumbnails';
-import { Hud } from './ui/hud';
-import { Minimap } from './ui/minimap';
+import { Hud, esc, sectionLabel } from './ui/hud';
 import { Input } from './input';
 import { Sfx } from './audio';
 
@@ -23,269 +29,419 @@ interface Flyer {
   t: number;
   dur: number;
   arc: number;
+  spin: number;
   done?: () => void;
 }
 
-type CamMode = 'chase' | 'top';
+interface Thrown {
+  obj: THREE.Object3D;
+  vel: THREE.Vector3;
+  spin: THREE.Vector3;
+  life: number;
+}
+
+type Target =
+  | { kind: 'product'; display: Display; instance: number }
+  | { kind: 'bag'; index: number }
+  | { kind: 'courier' }
+  | null;
+
+const PA_LINES = [
+  '📢 Anons: Reyon 1’de cipslerde %30 indirim!',
+  '📢 Anons: Kasa 3 açılmıştır, buyurun.',
+  '📢 Anons: Fırından taze simitler çıktı!',
+  '📢 Anons: Kaygan zemine dikkat, temizlik var.',
+  '📢 Anons: Kapında! siparişleri 15 dakikada kapınızda.',
+];
 
 export class Game {
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
-  private camera = new THREE.PerspectiveCamera(55, 1, 0.1, 200);
-  private camTarget = new THREE.Vector3();
-  private camMode: CamMode = 'chase';
+  private camera = new THREE.PerspectiveCamera(70, 1, 0.03, 300);
+  private rig = new THREE.Group();
   private layout: StoreLayout = buildLayout();
+  private world = new THREE.Group();
   private store!: StoreView;
-  private cartView!: CartView;
+  private outside!: OutsideView;
+  private cart!: ShoppingCart;
+  private hands!: Hands;
+  private people!: People;
   private courier!: CourierView;
-  private cart!: CartState;
+  private particles!: Particles;
+  private post!: Post;
+  private lighting!: Lighting;
+  private player!: PlayerState;
   private session!: OrderSession;
   private flow!: GameFlow;
   private hud: Hud;
-  private minimap: Minimap;
-  private input = new Input();
+  private input: Input;
   private sfx = new Sfx();
   private flyers: Flyer[] = [];
-  private target: Display | null = null;
+  private thrown: Thrown[] = [];
+  private held: THREE.Object3D | null = null;
+  private target: Target = null;
+  private raycaster = new THREE.Raycaster();
   private clock = new THREE.Clock();
+  private time = 0;
+  private quality: Quality = 'high';
+  private mood: MoodId = 'day';
+  private ready = false;
+  private shake = 0;
   private bumpCooldown = 0;
-  private lastTickSecond = -1;
-  private world = new THREE.Group();
+  private lastTick = -1;
+  private combo = 0;
+  private bestCombo = 0;
+  private lastPlace = -100;
+  private score = 0;
+  private paTimer = 40;
+  private hintTimer = 0;
+  private titleT = 0;
+  private wantLock = false;
+  private fovKick = 0;
 
   constructor(private container: HTMLElement) {
-    // ?q=low → no shadows / AA, 1x pixel ratio (weak GPUs, software rendering)
-    const low = new URLSearchParams(location.search).get('q') === 'low';
-    this.renderer = new THREE.WebGLRenderer({ antialias: !low, powerPreference: 'high-performance' });
-    this.renderer.setPixelRatio(low ? 1 : Math.min(2, window.devicePixelRatio || 1));
-    this.renderer.shadowMap.enabled = !low;
+    const params = new URLSearchParams(location.search);
+    const q = params.get('q');
+    if (q === 'low' || q === 'medium' || q === 'high') this.quality = q;
+    this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+    this.renderer.setPixelRatio(Math.min(this.quality === 'low' ? 1 : 1.5, window.devicePixelRatio || 1));
+    this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.05;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     container.appendChild(this.renderer.domElement);
-
-    this.scene.background = new THREE.Color('#bcd7ee');
-    this.scene.fog = new THREE.Fog('#bcd7ee', 45, 90);
-    this.setupLights();
-    this.scene.add(this.world);
+    this.input = new Input(this.renderer.domElement);
 
     this.hud = new Hud(container, DEMO_ORDER, {
-      start: () => this.start(),
+      start: (mood, quality) => this.start(mood, quality),
       restart: () => this.restart(),
       resume: () => this.setPaused(false),
-      openBag: (i) => this.openBag(i),
-      place: (t, b) => this.place(t, b),
-      discard: (t) => this.discard(t),
-      unbag: (b, i) => this.unbag(b, i),
-      closeOrder: () => this.closeOrder(),
-      togglePanel: () => this.togglePanel(),
+      accept: () => this.accept(),
+      complete: () => this.completeOrder(),
+      togglePhone: () => this.hud.setPhoneOpen(!this.hud.phoneOpen),
+      setMood: (m) => this.setMood(m),
     });
-    this.minimap = new Minimap(this.layout);
-    this.hud.attachMinimap(this.minimap.canvas);
+    this.hud.setTitleQuality(this.quality);
+    this.hud.showScreen('loading');
 
-    this.buildWorld();
-    this.hud.setThumbnails(renderThumbnails(this.renderer));
-    this.hud.showScreen('intro');
+    this.scene.add(this.world, this.rig);
+    this.rig.add(this.camera);
+    this.camera.rotation.order = 'YXZ';
 
     window.addEventListener('resize', () => this.resize());
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden && this.flow.timerRunning) this.setPaused(true);
+      if (document.hidden && this.flow?.timerRunning) this.setPaused(true);
+    });
+    document.addEventListener('pointerlockchange', () => {
+      if (!document.pointerLockElement && this.flow && this.inGame() && !this.flow.paused && this.wantLock) this.setPaused(true);
     });
     this.resize();
     this.exposeDebug();
-    this.renderer.setAnimationLoop(() => this.frame());
+    void this.init(params.get('mood'));
   }
 
-  private setupLights() {
-    this.scene.add(new THREE.HemisphereLight('#ffffff', '#b8ad96', 1.5));
-    this.scene.add(new THREE.AmbientLight('#ffffff', 0.25));
-    const sun = new THREE.DirectionalLight('#fff6e8', 2.1);
-    sun.position.set(9, 24, 12);
-    sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
-    const s = sun.shadow.camera;
-    s.left = -24;
-    s.right = 24;
-    s.top = 24;
-    s.bottom = -24;
-    s.near = 1;
-    s.far = 70;
-    sun.shadow.bias = -0.0005;
-    sun.shadow.normalBias = 0.02;
-    this.scene.add(sun);
+  private inGame(): boolean {
+    return ['incoming', 'playing', 'courierArriving', 'awaitingHandover', 'handover'].includes(this.flow.phase);
+  }
+
+  private async init(moodParam: string | null) {
+    try {
+      const base = import.meta.env.BASE_URL;
+      const fonts = [new FontFace('DynaPuff', `url(${base}fonts/DynaPuff.ttf)`, { weight: '400 700' }), new FontFace('Nunito', `url(${base}fonts/Nunito.ttf)`, { weight: '200 1000' })];
+      await Promise.all(
+        fonts.map((f) =>
+          f
+            .load()
+            .then((ff) => document.fonts.add(ff))
+            .catch(() => undefined),
+        ),
+      );
+      this.hud.setLoading(0.1, 'Modeller yükleniyor…');
+      await loadAssets((p) => this.hud.setLoading(0.1 + p * 0.6));
+      this.hud.setLoading(0.75, 'Raflar diziliyor…');
+      await nextFrame();
+      this.lighting = new Lighting(this.renderer, this.scene, this.quality !== 'low');
+      this.outside = new OutsideView(this.layout.bounds.maxZ);
+      this.scene.add(this.outside.group);
+      this.buildWorld();
+      this.hud.setLoading(0.85, 'Müşteriler içeri giriyor…');
+      await nextFrame();
+      this.hud.setThumbnails(renderThumbnails(this.renderer));
+      this.post = new Post(this.renderer, this.scene, this.camera, this.quality);
+      this.resize();
+      if (moodParam && moodParam in MOODS) this.mood = moodParam as MoodId;
+      await this.lighting.apply(this.mood, this.store, this.outside, this.post);
+      this.hud.setLoading(1, 'Hazır!');
+      this.ready = true;
+      this.hud.showScreen('title');
+      this.renderer.setAnimationLoop(() => this.frame());
+    } catch (err) {
+      console.error(err);
+      this.hud.setLoading(1, `Yükleme hatası: ${(err as Error).message}`);
+    }
   }
 
   /** (Re)creates everything that holds per-run state. */
   private buildWorld() {
     this.world.clear();
+    for (const c of [...this.rig.children]) if (c !== this.camera) this.rig.remove(c);
     this.flyers = [];
+    this.thrown = [];
+    this.held = null;
     this.store = new StoreView(this.layout);
-    this.cartView = new CartView();
+    this.people = new People(this.layout, 8);
+    this.people.onSpeak = (text, x, z) => {
+      if (Math.hypot(x - this.player.x, z - this.player.z) < 9) this.sfx.babble(text, 0.9 + Math.random() * 0.4);
+    };
     this.courier = new CourierView(this.layout.courierParking, this.layout.courierSpot, this.layout.door.z);
     this.courier.doorCallback = (open) => (this.store.doorTarget = open ? 1 : 0);
-    this.world.add(this.store.group, this.cartView.group, this.courier.group);
+    this.particles = new Particles();
+    this.world.add(this.store.group, this.people.group, this.courier.group, this.particles.group);
+
+    this.cart = new ShoppingCart();
+    this.cart.group.position.set(0, 0, PLAYER.cartOffset);
+    this.hands = new Hands();
+    this.rig.add(this.cart.group, this.hands.group);
 
     const { start } = this.layout;
-    this.cart = createCart(start.x, start.z, start.heading);
+    this.player = createPlayer(start.x, start.z, start.heading);
     this.session = new OrderSession(DEMO_ORDER);
     this.flow = new GameFlow(DEMO_ORDER.timeLimit);
-    this.cartView.setPose(this.cart.x, this.cart.z, this.cart.heading);
-    this.cartView.sync(this.session);
-    this.cartView.setStatusColor('#4da3ff');
+    this.cart.sync(this.session);
     this.target = null;
-    this.lastTickSecond = -1;
-    this.snapCamera();
+    this.combo = 0;
+    this.bestCombo = 0;
+    this.score = 0;
+    this.lastTick = -1;
+    this.paTimer = 40;
+    if (this.lighting) this.lighting.placePoints(this.store, this.outside);
   }
 
-  private start() {
+  private async setMood(m: MoodId) {
+    this.mood = m;
+    if (this.lighting && this.post) await this.lighting.apply(m, this.store, this.outside, this.post);
+  }
+
+  private start(mood: MoodId, quality: Quality) {
     this.sfx.unlock();
+    if (quality !== this.quality) {
+      this.quality = quality;
+      this.renderer.setPixelRatio(Math.min(quality === 'low' ? 1 : 1.5, window.devicePixelRatio || 1));
+      this.lighting.sun.castShadow = quality !== 'low';
+      this.post = new Post(this.renderer, this.scene, this.camera, quality);
+      this.resize();
+    }
+    void this.setMood(mood);
+    this.beginShift();
+  }
+
+  private beginShift() {
     this.flow.start();
     this.hud.showScreen(null);
-    this.hud.toast('Vardiya başladı! Siparişi topla.', 'info');
+    this.hud.setPlaying(true);
+    this.hud.setPhoneScreen('incoming');
+    this.hud.showHint(true);
+    this.hintTimer = 25;
+    this.sfx.ringStart();
+    this.sfx.setMusic(1);
+    this.input.enabled = true;
+    this.wantLock = true;
+    this.input.requestLock();
     this.input.clear();
+    this.hud.toast('📱 Telefonun çalıyor! Siparişi kabul et (Enter)', 'info', 4000);
   }
 
   private restart() {
+    this.sfx.ringStop();
     this.sfx.setEngine(0);
-    this.hud.setPanelOpen(false);
     this.buildWorld();
-    this.hud.showScreen(null);
-    this.flow.start();
-    this.sfx.unlock();
-    this.input.clear();
+    void this.setMood(this.mood);
+    this.hud.setPhoneOpen(false);
+    this.beginShift();
   }
 
   private setPaused(p: boolean) {
-    if (!['playing', 'courierArriving', 'awaitingHandover'].includes(this.flow.phase)) return;
+    if (!this.inGame()) return;
     this.flow.paused = p;
     this.hud.showScreen(p ? 'pause' : null);
+    this.input.enabled = !p;
+    this.wantLock = !p;
+    if (p) {
+      this.input.releaseLock();
+      this.sfx.setMusic(0);
+    } else {
+      this.input.requestLock();
+      this.sfx.setMusic(1);
+    }
     this.input.clear();
   }
 
   // ---------------------------------------------------------------- actions
-  private togglePanel() {
-    if (!this.flow.canDrive) return;
-    if (this.session.closed && !this.hud.panelOpen) {
-      this.hud.toast('Sipariş kapatıldı, poşetler hazır.', 'info');
-      return;
-    }
-    this.hud.setPanelOpen(!this.hud.panelOpen);
-    this.hud.updatePanel(this.session);
+  private accept() {
+    if (!this.flow.accept()) return;
+    this.sfx.ringStop();
+    this.sfx.ding();
+    this.hud.setPhoneScreen('picking');
+    this.hud.setPhoneOpen(true);
+    this.hud.toast('Sipariş kabul edildi! Saat işliyor ⏱', 'ok');
+    setTimeout(() => {
+      if (this.flow.phase === 'playing' && this.hud.phoneOpen) this.hud.setPhoneOpen(false);
+    }, 6000);
   }
 
   private interact() {
-    if (this.hud.panelOpen) return;
+    const t = this.target;
     const ph = this.flow.phase;
+    if (ph === 'incoming') {
+      this.hud.toast('Önce telefondaki siparişi kabul et (Enter)', 'info');
+      return;
+    }
     if (ph === 'awaitingHandover' && this.inDeliveryZone()) {
       this.handover();
       return;
     }
-    if ((ph === 'courierArriving' || ph === 'awaitingHandover') && this.inDeliveryZone()) {
-      this.hud.toast('Motorcu henüz gelmedi, biraz bekle…', 'info');
+    if (!t) return;
+    if (t.kind === 'courier') {
+      if (ph === 'awaitingHandover') this.hud.toast('Biraz daha yaklaş: yeşil teslimat noktasına gir', 'info');
       return;
     }
-    if (ph !== 'playing' || !this.target) return;
-    const d = this.target;
+    if (ph !== 'playing') return;
+    if (t.kind === 'bag') {
+      if (this.session.tray.length) this.placeHeld(t.index);
+      else if (!this.session.bags[t.index].open) {
+        this.session.openBag(t.index);
+        this.sfx.bagOpen();
+        this.cart.sync(this.session);
+      } else this.hud.toast('Önce raftan bir ürün al', 'info', 1600);
+      return;
+    }
+    if (t.kind === 'product') this.pick(t.display, t.instance);
+  }
+
+  private pick(d: Display, instance: number) {
     const product = getProduct(d.productId);
-    if (this.store.stockOf(d.id) === 0) {
-      this.hud.toast(`${product.name} tükendi. Başka rafa bak.`, 'err');
-      this.sfx.error();
-      return;
-    }
     const r = this.session.pick(d.productId);
     if (!r.ok) {
       this.hud.toast(r.reason, 'err');
       this.sfx.error();
       return;
     }
-    const taken = this.store.take(d.id);
+    const taken = this.store.take(d.id, instance);
+    this.sfx.pick();
+    const mesh = createProductMesh(product);
+    this.held = mesh;
+    this.hands.reachTarget = 1;
     if (taken) {
-      const mesh = createProductMesh(product);
       mesh.position.copy(taken.position);
       mesh.quaternion.copy(taken.quaternion);
       this.world.add(mesh);
       this.flyers.push({
         obj: mesh,
         from: taken.position.clone(),
-        to: () => this.cartView.trayWorldPosition(),
+        to: () => this.hands.holdAnchor.getWorldPosition(new THREE.Vector3()),
         t: 0,
-        dur: 0.45,
-        arc: 0.8,
-        done: () => {
-          mesh.removeFromParent();
-          this.cartView.sync(this.session);
-        },
+        dur: 0.28,
+        arc: 0.15,
+        spin: 0,
+        done: () => this.attachHeld(mesh),
       });
-    } else {
-      this.cartView.sync(this.session);
-    }
-    this.sfx.pick();
-    this.hud.toast(`Okutuldu: ${product.name}`, 'ok', 1800);
-    if (this.session.tray.length >= this.session.order.trayCapacity) {
-      this.hud.toast('Kasa doldu! Tab ile ürünleri poşetle.', 'info');
-    }
+    } else this.attachHeld(mesh);
+    this.hud.popup(product.name, 'pick');
   }
 
-  private openBag(i: number) {
-    const r = this.session.openBag(i);
-    if (r.ok) {
+  private attachHeld(mesh: THREE.Object3D) {
+    if (this.held !== mesh) return;
+    this.hands.holdAnchor.add(mesh);
+    mesh.position.set(0, 0, 0);
+    mesh.quaternion.identity();
+    mesh.rotation.set(0.15, Math.PI + 0.4, 0);
+    const box = new THREE.Box3().setFromObject(mesh);
+    const size = box.getSize(new THREE.Vector3()).length();
+    mesh.scale.setScalar(size > 0.35 ? 0.35 / size : 1);
+    mesh.traverse((o) => ((o as THREE.Mesh).castShadow = false));
+  }
+
+  private placeHeld(bagIndex: number) {
+    const pid = this.session.tray[0];
+    if (!pid) return;
+    if (!this.session.bags[bagIndex].open) {
+      this.session.openBag(bagIndex);
       this.sfx.bagOpen();
-      this.cartView.sync(this.session);
     }
-    this.hud.updatePanel(this.session);
-  }
-
-  private place(trayIndex: number, bagIndex: number) {
-    if (!this.session.bags[bagIndex]?.open) {
-      this.openBag(bagIndex);
-    }
-    const pid = this.session.tray[trayIndex];
-    const r = this.session.place(trayIndex, bagIndex);
-    if (r.ok) {
-      this.sfx.place();
-      this.cartView.sync(this.session);
-      if (pid) this.flyToBag(pid, bagIndex);
-      if (this.session.isComplete() && this.session.tray.length === 0) {
-        this.hud.toast('Tüm ürünler poşette! "Siparişi Tamamla"ya bas.', 'ok', 3500);
-      }
-    } else {
+    const r = this.session.place(0, bagIndex);
+    if (!r.ok) {
       this.sfx.error();
-      this.hud.toast(r.reason, 'err', 3200);
+      this.cart.rejectShake(bagIndex);
+      this.hud.toast(r.reason, 'err', 3400);
+      this.post.pulse('#ef4444', 0.35);
+      this.shake = 0.25;
       if (r.penalty) {
         this.flow.penalize(r.penalty);
-        this.hud.flashTimerPenalty(r.penalty);
-        this.cartView.flash('#ff3b30');
+        this.hud.penalty(r.penalty);
+        this.combo = 0;
+        this.score -= 50;
         if (this.flow.phase === 'lost') this.lose();
       }
+      this.cart.sync(this.session);
+      return;
     }
-    this.hud.updatePanel(this.session);
-  }
-
-  private flyToBag(pid: string, bagIndex: number) {
-    const mesh = createProductMesh(getProduct(pid));
-    const from = this.cartView.trayWorldPosition();
-    mesh.position.copy(from);
-    this.world.add(mesh);
-    this.flyers.push({ obj: mesh, from, to: () => this.cartView.bagWorldPosition(bagIndex), t: 0, dur: 0.35, arc: 0.5, done: () => mesh.removeFromParent() });
-  }
-
-  private discard(trayIndex: number) {
-    const pid = this.session.tray[trayIndex];
-    if (this.session.discard(trayIndex).ok && pid) {
-      this.hud.toast(`İade edildi: ${getProduct(pid).name}`, 'info', 1800);
-      this.cartView.sync(this.session);
+    // fly the held mesh into the bag
+    const mesh = this.held;
+    this.held = null;
+    this.hands.reachTarget = 0;
+    if (mesh) {
+      const from = mesh.getWorldPosition(new THREE.Vector3());
+      this.world.attach(mesh);
+      this.flyers.push({
+        obj: mesh,
+        from,
+        to: () => this.cart.bagWorldPosition(bagIndex),
+        t: 0,
+        dur: 0.32,
+        arc: 0.25,
+        spin: 6,
+        done: () => {
+          mesh.removeFromParent();
+          this.cart.sync(this.session);
+          this.particles.sparkle(this.cart.bagWorldPosition(bagIndex), '#fff3a0', 22, 1.2);
+          this.sfx.place();
+        },
+      });
+    } else this.cart.sync(this.session);
+    // combo + score
+    this.combo = this.time - this.lastPlace < 14 ? this.combo + 1 : 1;
+    this.lastPlace = this.time;
+    this.bestCombo = Math.max(this.bestCombo, this.combo);
+    const gained = 100 + (this.combo - 1) * 40;
+    this.score += gained;
+    if (this.combo >= 2) {
+      this.hud.popup(`Seri x${this.combo}!  +${gained}`, 'combo');
+      this.sfx.combo(this.combo);
+    } else this.hud.popup(`+${gained}`, 'plus');
+    if (this.session.isComplete()) {
+      this.hud.toast('Hepsi poşette! F ile siparişi tamamla 🎉', 'ok', 4000);
+      this.hud.setPhoneOpen(true);
     }
-    this.hud.updatePanel(this.session);
   }
 
-  private unbag(bagIndex: number, itemIndex: number) {
-    const r = this.session.unbag(bagIndex, itemIndex);
-    if (!r.ok) this.hud.toast(r.reason, 'err');
-    this.cartView.sync(this.session);
-    this.hud.updatePanel(this.session);
+  private dropHeld() {
+    if (!this.session.tray.length) return;
+    const pid = this.session.tray[0];
+    this.session.discard(0);
+    const mesh = this.held;
+    this.held = null;
+    this.hands.reachTarget = 0;
+    this.sfx.throwItem();
+    if (mesh) {
+      this.world.attach(mesh);
+      const fwd = new THREE.Vector3();
+      this.camera.getWorldDirection(fwd);
+      this.thrown.push({ obj: mesh, vel: fwd.multiplyScalar(3.2).add(new THREE.Vector3(0, 2.2, 0)), spin: new THREE.Vector3(Math.random() * 8, Math.random() * 8, 0), life: 2.4 });
+    }
+    this.hud.toast(`Geri bırakıldı: ${getProduct(pid).name}`, 'info', 1600);
   }
 
-  private closeOrder() {
+  private completeOrder() {
     if (this.flow.phase !== 'playing') return;
     const r = this.session.close();
     if (!r.ok) {
@@ -295,141 +451,254 @@ export class Game {
     }
     this.flow.orderClosed();
     this.sfx.complete();
-    this.cartView.sync(this.session);
-    this.cartView.setStatusColor('#2ecc71');
-    this.hud.setPanelOpen(false);
-    this.hud.toast('Sipariş hazır! Motorcu çağrıldı.', 'ok', 3500);
+    this.cart.sync(this.session);
+    this.particles.confettiBurst(this.cart.bagWorldPosition(1).add(new THREE.Vector3(0, 0.3, 0)), 90);
+    this.post.pulse('#22c55e', 0.25);
     this.store.deliveryActive = true;
+    this.hud.setPhoneScreen('courier');
+    this.hud.courierEta = 9;
+    this.hud.toast('Sipariş hazır! Motorcu Mert yola çıktı 🛵', 'ok', 3500);
     this.courier.arrive(() => {
       this.flow.courierArrived();
-      this.hud.toast('Motorcu kapıda bekliyor! Siparişi teslim et.', 'ok', 3500);
-      this.sfx.tick();
+      this.hud.courierEta = 0;
+      this.hud.toast('Motorcu kapıda! Teslimat noktasına git ve E’ye bas', 'ok', 4000);
+      this.sfx.ding();
     });
   }
 
   private inDeliveryZone(): boolean {
     const d = this.layout.delivery;
-    return Math.hypot(this.cart.x - d.x, this.cart.z - d.z) <= d.radius;
+    return Math.hypot(this.player.x - d.x, this.player.z - d.z) <= d.radius + 0.4;
   }
 
   private handover() {
     if (!this.flow.handover()) return;
-    this.cart.speed = 0;
+    this.player.vx = this.player.vz = 0;
     this.store.deliveryActive = false;
     this.sfx.place();
-    const bags = this.cartView.takeBags();
+    const bags = this.cart.takeBags();
     this.courier.receive(bags, () => {
-      this.hud.toast('Motorcu siparişi teslim aldı!', 'ok');
+      this.particles.confettiBurst(this.courier.riderPosition().add(new THREE.Vector3(0, 1.6, 0)));
+      this.sfx.win();
+      this.hud.setPhoneScreen('delivered');
       this.courier.leave(() => this.win());
+      setTimeout(() => {
+        if (this.flow.phase === 'handover') this.win();
+      }, 2600);
     });
   }
 
   private win() {
     if (!this.flow.handoverDone()) return;
     this.sfx.setEngine(0);
-    this.sfx.win();
-    this.hud.showWon(this.flow.timeLeft, this.flow.stars(this.session.mistakes), this.session.mistakes, this.flow.penalties);
+    this.sfx.setMusic(0);
+    const timeBonus = Math.round(this.flow.timeLeft * 5);
+    this.score = Math.max(0, this.score + timeBonus);
+    this.hud.showWon({
+      timeLeft: this.flow.timeLeft,
+      stars: this.flow.stars(this.session.mistakes),
+      mistakes: this.session.mistakes,
+      penalties: this.flow.penalties,
+      bestCombo: this.bestCombo,
+      score: this.score,
+    });
     this.hud.showScreen('won');
+    this.input.enabled = false;
+    this.wantLock = false;
+    this.input.releaseLock();
   }
 
   private lose() {
-    this.hud.setPanelOpen(false);
+    this.sfx.ringStop();
     this.sfx.lose();
     this.sfx.setEngine(0);
+    this.sfx.setMusic(0);
     this.sfx.setCartSpeed(0);
-    const note = this.session.closed
-      ? 'Sipariş hazırdı ama motorcuya zamanında teslim edilemedi.'
-      : 'Sipariş zamanında hazırlanamadı. Müşteri siparişi iptal etti.';
+    this.hud.setPhoneScreen('failed');
+    const note = this.session.closed ? 'Sipariş hazırdı ama motorcuya zamanında teslim edilemedi.' : 'Sipariş zamanında hazırlanamadı. Müşteri siparişi iptal etti.';
     this.hud.showLost(this.session.totalBagged(), this.session.totalRequired(), note);
     this.hud.showScreen('lost');
+    this.input.enabled = false;
+    this.wantLock = false;
+    this.input.releaseLock();
   }
 
-  // ------------------------------------------------------------------- loop
+  // ---------------------------------------------------------------- loop
   private frame() {
     const dt = Math.min(0.05, this.clock.getDelta());
     this.update(dt);
-    this.renderer.render(this.scene, this.camera);
+    this.post.render(dt);
   }
 
   private handleActions() {
     for (const a of this.input.consume()) {
       const ph = this.flow.phase;
-      switch (a) {
-        case 'pause':
-          if (this.hud.panelOpen && !this.flow.paused) this.togglePanel();
-          else this.setPaused(!this.flow.paused);
-          break;
-        case 'restart':
-          if (ph === 'won' || ph === 'lost') this.restart();
-          break;
-        case 'mute':
-          this.sfx.setMuted(!this.sfx.muted);
-          this.hud.toast(this.sfx.muted ? 'Ses kapalı' : 'Ses açık', 'info', 1200);
-          break;
-        case 'camera':
-          this.camMode = this.camMode === 'chase' ? 'top' : 'chase';
-          break;
-        default:
-          if (this.flow.paused || !this.flow.canDrive) break;
-          if (a === 'panel') this.togglePanel();
-          else if (a === 'interact') {
-            if (ph === 'intro') break;
-            this.interact();
-          } else if (a === 'close') {
-            if (this.hud.panelOpen) this.closeOrder();
-          } else if (a === 'bag1' || a === 'bag2' || a === 'bag3') {
-            if (!this.hud.panelOpen) break;
-            const bi = Number(a.slice(3)) - 1;
-            const ti = this.hud.selectedTray >= 0 ? this.hud.selectedTray : 0;
-            if (this.session.tray.length) this.place(ti, bi);
-            else this.openBag(bi);
-          }
+      if (a === 'pause') {
+        if (this.inGame()) this.setPaused(!this.flow.paused);
+        continue;
       }
-    }
-    if (this.flow.phase === 'intro') {
-      // allow Enter/E on the intro screen
+      if (a === 'mute') {
+        this.sfx.setMuted(!this.sfx.muted);
+        this.hud.toast(this.sfx.muted ? 'Ses kapalı' : 'Ses açık', 'info', 1200);
+        continue;
+      }
+      if (this.flow.paused || !this.flow.canDrive) continue;
+      switch (a) {
+        case 'accept':
+          if (ph === 'incoming') this.accept();
+          break;
+        case 'interact':
+          this.interact();
+          break;
+        case 'drop':
+          this.dropHeld();
+          break;
+        case 'phone':
+          if (ph !== 'incoming') this.hud.setPhoneOpen(!this.hud.phoneOpen);
+          break;
+        case 'complete':
+          this.completeOrder();
+          break;
+        case 'bag1':
+        case 'bag2':
+        case 'bag3':
+          if (ph === 'playing' && this.session.tray.length) this.placeHeld(Number(a.slice(3)) - 1);
+          break;
+      }
     }
   }
 
   private update(dt: number) {
-    this.handleActions();
+    this.time += dt;
+    if (!this.ready) return;
     const flow = this.flow;
-    const driving = flow.canDrive && !this.hud.panelOpen;
-    const input = driving ? this.input.axis() : { throttle: 0, steer: 0, brake: true };
-    if (!flow.paused && flow.phase !== 'won' && flow.phase !== 'lost') {
-      const hit = stepCart(this.cart, input, dt, this.layout.colliders);
-      this.bumpCooldown -= dt;
-      if (hit && Math.abs(this.cart.speed) > 1.2 && this.bumpCooldown <= 0) {
-        this.sfx.bump();
-        this.bumpCooldown = 0.5;
-      }
+    if (flow.phase === 'intro') {
+      this.updateTitleCamera(dt);
+      this.people.update(dt, { x: 999, z: 999, yaw: 0 });
+      this.outside.update(dt);
+      this.store.update(dt);
+      return;
     }
-    this.cartView.setPose(this.cart.x, this.cart.z, this.cart.heading);
-    this.cartView.update(dt, this.cart.speed);
-    this.sfx.setCartSpeed(flow.paused ? 0 : Math.abs(this.cart.speed) / CART.maxForward);
+    this.handleActions();
+    const active = flow.canDrive;
+    if (active) {
+      const l = this.input.look();
+      look(this.player, l.yaw, l.pitch);
+      const mv = this.input.move();
+      const blockers = this.people.blockers();
+      if (flow.phase === 'handover') mv.forward = mv.strafe = mv.turn = 0;
+      const hit = stepPlayer(this.player, mv, dt, this.layout.colliders, blockers);
+      this.bumpCooldown -= dt;
+      const sp = speedOf(this.player);
+      if (hit && this.bumpCooldown <= 0 && sp > 1.4) {
+        this.sfx.bump();
+        this.shake = 0.18;
+        this.bumpCooldown = 0.6;
+        const c = { x: this.player.x + Math.sin(this.player.yaw) * PLAYER.cartOffset, z: this.player.z + Math.cos(this.player.yaw) * PLAYER.cartOffset };
+        this.people.bump(c.x, c.z, sp);
+      }
+      this.fovKick += ((mv.sprint && mv.forward > 0 ? 1 : 0) - this.fovKick) * Math.min(1, dt * 4);
+    } else {
+      this.input.look();
+    }
+    const speed = speedOf(this.player);
+    this.sfx.setCartSpeed(flow.paused ? 0 : speed / PLAYER.sprint);
 
-    // timer
     if (flow.tick(dt)) this.lose();
     if (flow.timerRunning && flow.timeLeft <= 10) {
       const s = Math.ceil(flow.timeLeft);
-      if (s !== this.lastTickSecond) {
-        this.lastTickSecond = s;
+      if (s !== this.lastTick) {
+        this.lastTick = s;
         this.sfx.tick();
       }
     }
 
-    // pick target
-    this.target = flow.phase === 'playing' && !this.hud.panelOpen && !flow.paused ? findDisplayAt(this.layout.displays, this.cart.x, this.cart.z) : null;
-    this.store.highlight(this.target);
-
     if (!flow.paused) {
+      this.people.update(dt, this.player);
       this.courier.update(dt);
       this.store.update(dt);
+      this.outside.update(dt);
+      this.particles.update(dt);
       this.updateFlyers(dt);
+      this.cart.update(dt, speed);
+      this.paTimer -= dt;
+      if (this.paTimer <= 0 && flow.phase === 'playing') {
+        this.paTimer = 50 + Math.random() * 30;
+        this.sfx.chime();
+        this.hud.toast(PA_LINES[Math.floor(Math.random() * PA_LINES.length)], 'info', 4200);
+      }
+      if (this.hintTimer > 0) {
+        this.hintTimer -= dt;
+        if (this.hintTimer <= 0) this.hud.showHint(false);
+      }
     }
     this.sfx.setEngine(flow.paused ? 0 : this.courier.engineLevel);
-    this.updateCamera(dt);
+    this.updateRig(dt, speed);
+    this.updateTarget();
     this.updateHud(dt);
+  }
+
+  private updateRig(dt: number, speed: number) {
+    const p = this.player;
+    this.rig.position.set(p.x, 0, p.z);
+    this.rig.rotation.y = p.yaw;
+    const bobAmt = Math.min(1, speed / PLAYER.walk);
+    const bob = Math.sin(p.stride * 2.4) * 0.028 * bobAmt;
+    this.shake = Math.max(0, this.shake - dt);
+    const sh = this.shake * 0.08;
+    this.camera.position.set((Math.random() - 0.5) * sh + Math.cos(p.stride * 1.2) * 0.012 * bobAmt, PLAYER.eyeHeight + bob + (Math.random() - 0.5) * sh, 0);
+    this.camera.rotation.set(p.pitch, Math.PI, 0);
+    const fov = 70 + this.fovKick * 7;
+    if (Math.abs(this.camera.fov - fov) > 0.05) {
+      this.camera.fov = fov;
+      this.camera.updateProjectionMatrix();
+    }
+    // cart sways a bit when turning / accelerating
+    const lateral = -(p.vx * Math.cos(p.yaw) - p.vz * Math.sin(p.yaw));
+    this.cart.group.rotation.z += (lateral * 0.012 - this.cart.group.rotation.z) * Math.min(1, dt * 6);
+    this.cart.group.position.y = Math.abs(Math.sin(p.stride * 9)) * 0.004 * bobAmt;
+    this.hands.update(dt, this.camera, PLAYER.cartOffset - 0.52, 1.04, bob);
+  }
+
+  private updateTitleCamera(dt: number) {
+    this.titleT += dt;
+    const t = this.titleT * 0.05;
+    const x = Math.sin(t) * 11;
+    this.rig.position.set(0, 0, 0);
+    this.rig.rotation.y = 0;
+    this.camera.position.set(x, 2.1 + Math.sin(t * 2) * 0.2, 5.3);
+    this.camera.lookAt(x - 2.5 * Math.cos(t), 1.1, -3);
+  }
+
+  private updateTarget() {
+    const ph = this.flow.phase;
+    this.rig.updateMatrixWorld(true);
+    let target: Target = null;
+    this.raycaster.setFromCamera(new THREE.Vector2(0, 0), this.camera);
+    this.raycaster.far = 3.1;
+    if (ph === 'playing' && !this.flow.paused) {
+      const bagHits = this.raycaster.intersectObjects(this.cart.hitTargets, false);
+      if (bagHits.length) {
+        target = { kind: 'bag', index: ShoppingCart.bagIndexOf(bagHits[0].object) };
+      } else {
+        const hits = this.raycaster.intersectObjects(this.store.productMeshes, false);
+        for (const hit of hits) {
+          const r = this.store.resolveHit(hit.object, hit.instanceId);
+          if (r) {
+            target = { kind: 'product', display: r.display, instance: r.instance };
+            break;
+          }
+        }
+      }
+    }
+    if ((ph === 'awaitingHandover' || ph === 'courierArriving') && this.courier.isVisibleNear(this.player.x, this.player.z, 6)) {
+      const to = this.courier.riderPosition().sub(this.camera.getWorldPosition(new THREE.Vector3())).setY(0).normalize();
+      const fwd = this.camera.getWorldDirection(new THREE.Vector3()).setY(0).normalize();
+      if (to.dot(fwd) > 0.85) target = { kind: 'courier' };
+    }
+    this.target = target;
+    this.store.setHover(target?.kind === 'product' ? target : null);
+    for (let i = 0; i < 3; i++) this.cart.setBagHighlight(i, target?.kind === 'bag' && target.index === i);
   }
 
   private updateFlyers(dt: number) {
@@ -438,113 +707,92 @@ export class Game {
       f.t += dt;
       const k = Math.min(1, f.t / f.dur);
       const e = k * k * (3 - 2 * k);
-      const to = f.to();
-      f.obj.position.lerpVectors(f.from, to, e);
+      f.obj.position.lerpVectors(f.from, f.to(), e);
       f.obj.position.y += Math.sin(k * Math.PI) * f.arc;
-      f.obj.rotation.y += dt * 8;
+      f.obj.rotation.y += dt * f.spin;
       if (k >= 1) {
-        f.done?.();
         this.flyers.splice(i, 1);
+        f.done?.();
       }
     }
-  }
-
-  private cameraGoal(): { pos: THREE.Vector3; look: THREE.Vector3 } {
-    const fx = Math.sin(this.cart.heading);
-    const fz = Math.cos(this.cart.heading);
-    const c = new THREE.Vector3(this.cart.x, 0, this.cart.z);
-    const ph = this.flow.phase;
-    if (ph === 'handover' || ph === 'won') {
-      // cinematic: look at the entrance from inside the store
-      const look = new THREE.Vector3(this.layout.courierSpot.x + 0.8, 1.0, this.layout.courierSpot.z + 1.2);
-      return { pos: new THREE.Vector3(look.x - 5, 4.2, look.z - 7.5), look };
+    for (let i = this.thrown.length - 1; i >= 0; i--) {
+      const t = this.thrown[i];
+      t.life -= dt;
+      t.vel.y -= 9.8 * dt;
+      t.obj.position.addScaledVector(t.vel, dt);
+      t.obj.rotation.x += t.spin.x * dt;
+      t.obj.rotation.y += t.spin.y * dt;
+      if (t.obj.position.y < 0.05) {
+        t.obj.position.y = 0.05;
+        t.vel.y = Math.abs(t.vel.y) * 0.35;
+        t.vel.x *= 0.6;
+        t.vel.z *= 0.6;
+        t.spin.multiplyScalar(0.5);
+      }
+      if (t.life < 0.4) t.obj.scale.multiplyScalar(Math.max(0, 1 - dt * 6));
+      if (t.life <= 0) {
+        t.obj.removeFromParent();
+        this.thrown.splice(i, 1);
+      }
     }
-    const goal =
-      this.camMode === 'top'
-        ? { pos: c.clone().add(new THREE.Vector3(-fx * 2.5, 15, -fz * 2.5)), look: c.clone().add(new THREE.Vector3(fx * 1.2, 0, fz * 1.2)) }
-        : { pos: c.clone().add(new THREE.Vector3(-fx * 5.6, 5.0, -fz * 5.6)), look: c.clone().add(new THREE.Vector3(fx * 2.2, 0.7, fz * 2.2)) };
-    // keep the camera inside the building so walls never block the view
-    const b = this.layout.bounds;
-    const m = 0.4;
-    goal.pos.x = THREE.MathUtils.clamp(goal.pos.x, b.minX + m, b.maxX - m);
-    goal.pos.z = THREE.MathUtils.clamp(goal.pos.z, b.minZ + m, b.maxZ - m);
-    return goal;
-  }
-
-  private snapCamera() {
-    const g = this.cameraGoal();
-    this.camera.position.copy(g.pos);
-    this.camTarget.copy(g.look);
-    this.camera.lookAt(this.camTarget);
-  }
-
-  private updateCamera(dt: number) {
-    const g = this.cameraGoal();
-    const k = 1 - Math.exp(-dt * (this.flow.phase === 'handover' ? 2 : 6));
-    this.camera.position.lerp(g.pos, k);
-    this.camTarget.lerp(g.look, 1 - Math.exp(-dt * 9));
-    this.camera.lookAt(this.camTarget);
   }
 
   private updateHud(dt: number) {
     const flow = this.flow;
     const s = this.session;
     this.hud.setTimer(flow.timeLeft, flow.timerRunning);
-    this.hud.updateOrder(s);
-    this.hud.updateTrayBadge(s);
-    this.hud.updatePanel(s);
+    if (this.hud.courierEta > 0 && flow.phase === 'courierArriving') this.hud.courierEta = Math.max(0.5, this.hud.courierEta - dt);
+    this.hud.updatePhone(s, flow.timeLeft, s.tray[0] ?? null);
+    this.hud.setHeld(flow.phase === 'playing' ? (s.tray[0] ?? null) : null);
+    const d = new Date();
+    this.hud.setClock(`${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`);
 
-    // objective line
+    const t = this.target;
+    let hover: string | null = null;
+    let cross: 'none' | 'product' | 'bag' | 'bad' | 'courier' = 'none';
+    if (t?.kind === 'product') {
+      const p = getProduct(t.display.productId);
+      cross = s.tray.length ? 'bad' : 'product';
+      hover = `<b>${esc(p.name)}</b><span>${esc(sectionLabel(p.id))} · ${formatPrice(p.price)}</span><em>${s.tray.length ? 'Elin dolu' : '<kbd>Sol tık</kbd> Al'}</em>`;
+    } else if (t?.kind === 'bag') {
+      const b = s.bags[t.index];
+      cross = 'bag';
+      const action = s.tray.length ? 'Poşete koy' : b.open ? 'Poşet açık' : 'Poşeti aç';
+      hover = `<b>Poşet ${t.index + 1}</b><span>${b.open ? `${b.items.length}/${s.order.bagCapacity} ürün` : 'Katlanmış'}</span><em><kbd>Sol tık</kbd> ${action}</em>`;
+    } else if (t?.kind === 'courier') {
+      cross = 'courier';
+      hover = `<b>Motorcu ${esc(DEMO_ORDER.courier)}</b><span>${this.inDeliveryZone() ? 'Siparişi teslim et' : 'Teslimat noktasına gir'}</span><em><kbd>E</kbd> Teslim et</em>`;
+    }
+    if (flow.phase === 'awaitingHandover' && this.inDeliveryZone() && !hover) {
+      hover = `<b>Teslimat noktası</b><em><kbd>E</kbd> Siparişi motorcuya ver</em>`;
+      cross = 'courier';
+    }
+    if (flow.paused || !flow.canDrive) hover = null;
+    this.hud.setHover(hover);
+    this.hud.setCrosshair(cross);
+
     let obj = '';
     const remaining = s.totalRequired() - s.totalBagged();
     switch (flow.phase) {
+      case 'incoming':
+        obj = '📱 Yeni sipariş! <kbd>Enter</kbd> ile kabul et';
+        break;
       case 'playing':
-        if (s.isComplete() && s.tray.length === 0) obj = 'Tüm ürünler poşette → <kbd>Tab</kbd> paneli aç, <b>Siparişi Tamamla</b>';
-        else if (s.isComplete()) obj = 'Kasada sipariş dışı ürün kaldı → <kbd>Tab</kbd> ile iade et';
-        else if (s.tray.length >= s.order.trayCapacity) obj = 'Kasa dolu → <kbd>Tab</kbd> ile ürünleri poşetle';
-        else obj = `Ürünleri reyonlardan topla ve poşetle · <b>${remaining}</b> ürün kaldı`;
+        if (s.isComplete() && !s.tray.length) obj = '✅ Hepsi poşette → <kbd>F</kbd> Siparişi tamamla';
+        else if (s.tray.length) obj = '🛒 Arabadaki poşete bak ve <kbd>Sol tık</kbd>';
+        else obj = `🧾 Listeden ürün topla · <b>${remaining}</b> kaldı · <kbd>Tab</kbd> liste`;
         break;
       case 'courierArriving':
-        obj = 'Motorcu yolda… Arabayı girişteki <b style="color:#2ecc71">Teslimat Noktası</b>na sür';
+        obj = '🛵 Motorcu yolda! Girişteki <b class="g">yeşil noktaya</b> git';
         break;
       case 'awaitingHandover':
-        obj = this.inDeliveryZone() ? '<kbd>E</kbd> ile siparişi motorcuya teslim et!' : 'Motorcu kapıda bekliyor! <b style="color:#2ecc71">Teslimat Noktası</b>na git';
+        obj = this.inDeliveryZone() ? '🙌 <kbd>E</kbd> ile siparişi teslim et!' : '🛵 Motorcu kapıda! <b class="g">Yeşil noktaya</b> git';
         break;
       case 'handover':
-        obj = 'Sipariş teslim ediliyor…';
+        obj = '📦 Teslim ediliyor…';
         break;
-      default:
-        obj = '';
     }
     this.hud.setObjective(obj);
-
-    // prompt + floating label
-    let prompt: string | null = null;
-    if (this.target) {
-      const p = getProduct(this.target.productId);
-      const stock = this.store.stockOf(this.target.id);
-      prompt = stock > 0 ? `<kbd>E</kbd> Al: <b>${p.name}</b>` : `<b>${p.name}</b> tükendi`;
-      const top = this.store.displayTop(this.target).project(this.camera);
-      const w = this.renderer.domElement.clientWidth;
-      const hgt = this.renderer.domElement.clientHeight;
-      const sec = SECTIONS[p.section];
-      this.hud.setFloatLabel(
-        `<span class="fl-sec" style="background:${sec.color}">${sec.name}</span>${p.name}`,
-        (top.x * 0.5 + 0.5) * w,
-        (-top.y * 0.5 + 0.5) * hgt,
-      );
-    } else {
-      this.hud.setFloatLabel(null);
-    }
-    if (flow.phase === 'awaitingHandover' && this.inDeliveryZone()) prompt = '<kbd>E</kbd> Siparişi motorcuya teslim et';
-    if (this.hud.panelOpen || flow.paused || !flow.canDrive) prompt = null;
-    this.hud.setPrompt(prompt);
-
-    const markers = [];
-    if (flow.phase === 'courierArriving' || flow.phase === 'awaitingHandover') {
-      markers.push({ x: this.layout.delivery.x, z: this.layout.delivery.z, color: '#2ecc71', pulse: true, label: 'TESLİMAT' });
-    }
-    this.minimap.draw(this.cart, markers, dt);
   }
 
   private resize() {
@@ -552,49 +800,113 @@ export class Game {
     const h = this.container.clientHeight || window.innerHeight;
     this.renderer.setSize(w, h);
     this.camera.aspect = w / h;
-    this.camera.fov = w / h < 1 ? 70 : 55;
     this.camera.updateProjectionMatrix();
+    this.post?.setSize(w, h);
   }
 
-  /** Small hook used by automated play-tests (scripts/playtest.mjs). */
+  /** Hooks for automated play-tests (scripts/playtest.mjs). */
   private exposeDebug() {
     const self = this;
     (window as unknown as { __game: unknown }).__game = {
+      get ready() {
+        return self.ready;
+      },
       get phase() {
-        return self.flow.phase;
+        return self.flow?.phase;
       },
       get timeLeft() {
         return self.flow.timeLeft;
       },
-      get cart() {
-        return { ...self.cart };
+      get player() {
+        return { ...self.player };
       },
       get session() {
         return { tray: [...self.session.tray], bags: self.session.bags.map((b) => ({ ...b, items: [...b.items] })), mistakes: self.session.mistakes };
       },
       get target() {
-        return self.target ? { id: self.target.id, productId: self.target.productId } : null;
+        const t = self.target;
+        if (!t) return null;
+        return t.kind === 'product' ? { kind: t.kind, productId: t.display.productId, display: t.display.id } : t;
       },
       get courier() {
         return self.courier.state;
       },
-      displays: this.layout.displays,
-      delivery: this.layout.delivery,
-      teleport(x: number, z: number, heading: number) {
-        self.cart.x = x;
-        self.cart.z = z;
-        self.cart.heading = heading;
-        self.cart.speed = 0;
-        self.snapCamera();
+      get score() {
+        return self.score;
+      },
+      layout: this.layout,
+      start(mood: MoodId = 'day', quality: Quality = self.quality) {
+        self.start(mood, quality);
+      },
+      teleport(x: number, z: number, yaw: number, pitch = -0.1) {
+        self.player.x = x;
+        self.player.z = z;
+        self.player.yaw = yaw;
+        self.player.pitch = pitch;
+        self.player.vx = self.player.vz = 0;
+      },
+      /** Turn the camera to look at a world point. */
+      aim(x: number, y: number, z: number) {
+        const p = self.player;
+        const dx = x - p.x;
+        const dz = z - p.z;
+        p.yaw = Math.atan2(dx, dz);
+        const eyeY = PLAYER.eyeHeight;
+        p.pitch = Math.atan2(y - eyeY, Math.hypot(dx, dz));
+      },
+      /** Aim at a bag in the cart. */
+      aimBag(i: number) {
+        const w = self.cart.bagWorldPosition(i);
+        (this as { aim(x: number, y: number, z: number): void }).aim(w.x, w.y - 0.15, w.z);
+      },
+      /** Walk up to the nearest display holding `productId` and aim at one of its items. */
+      goToProduct(productId: string): boolean {
+        const p = self.player;
+        const candidates = self.layout.displays.filter((d) => d.productId === productId && self.store.stockOf(d.id) > 0);
+        if (!candidates.length) return false;
+        candidates.sort((a, b) => Math.hypot(a.stand.x - p.x, a.stand.z - p.z) - Math.hypot(b.stand.x - p.x, b.stand.z - p.z));
+        const d = candidates[0];
+        // stand a bit further back so the cart fits in front of the shelf
+        const fx = Math.sin(d.angle);
+        const fz = Math.cos(d.angle);
+        p.x = d.x + fx * (d.depth / 2 + 1.42);
+        p.z = d.z + fz * (d.depth / 2 + 1.42);
+        p.vx = p.vz = 0;
+        const items = self.store.instancePositions(d.id);
+        items.sort((a, b) => Math.abs(a.y - 1.1) - Math.abs(b.y - 1.1) || Math.hypot(a.x - p.x, a.z - p.z) - Math.hypot(b.x - p.x, b.z - p.z));
+        const t = items[0];
+        const dx = t.x - p.x;
+        const dz = t.z - p.z;
+        p.yaw = Math.atan2(dx, dz);
+        p.pitch = Math.atan2(t.y - PLAYER.eyeHeight, Math.hypot(dx, dz));
+        return true;
+      },
+      press(a: string) {
+        self.input.push(a as never);
+      },
+      setMood(m: MoodId) {
+        return self.setMood(m);
       },
       skipCourier() {
         self.courier.skipArrival();
       },
-      /** Runs the game logic for `seconds` in 60 Hz steps (keyboard state included), then renders once. */
+      /** Stop the rAF loop (tests drive frames with advance()). */
+      freeze(on = true) {
+        self.renderer.setAnimationLoop(on ? null : () => self.frame());
+      },
       advance(seconds: number) {
         const steps = Math.round(seconds * 60);
         for (let i = 0; i < steps; i++) self.update(1 / 60);
-        self.renderer.render(self.scene, self.camera);
+        self.post.render(1 / 60);
+      },
+      get productStats() {
+        return self.store.productMeshes
+          .map((m) => {
+            const g = m.geometry;
+            const tris = (g.index ? g.index.count : g.attributes.position.count) / 3;
+            return { name: m.name, tris, count: m.count, total: tris * m.count };
+          })
+          .sort((a, b) => b.total - a.total);
       },
       get renderInfo() {
         const i = self.renderer.info;
@@ -602,4 +914,8 @@ export class Game {
       },
     };
   }
+}
+
+function nextFrame(): Promise<void> {
+  return new Promise((r) => requestAnimationFrame(() => r()));
 }

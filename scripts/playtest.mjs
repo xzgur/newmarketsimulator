@@ -1,14 +1,14 @@
 /**
  * Automated end-to-end play-test (Playwright + Chromium).
  *
- *   npm run dev            # in another terminal
- *   node scripts/playtest.mjs [url]
+ *   npm run dev                 # in another terminal
+ *   npm run playtest [-- url]   # default http://localhost:5173/?q=low
  *
- * Plays the whole demo order through the real UI: drives with the keyboard,
- * picks products (including one wrong product), bags them by clicking the
- * cart panel, closes the order, waits for the courier and hands it over.
- * Uses window.__game (debug hook) to teleport between shelves and to step the
- * simulation deterministically, so it also works with software rendering.
+ * Plays the whole order through the real input layer: keyboard walking,
+ * mouse drag-look, left click to pick / bag, right click to put back, F to
+ * close the order, E to hand it to the courier. The debug hook
+ * (window.__game) is only used to walk up to shelves / aim at items and to
+ * step the simulation deterministically, so it also runs on software GL.
  */
 import { createRequire } from 'node:module';
 import { mkdirSync } from 'node:fs';
@@ -28,14 +28,14 @@ mkdirSync(out, { recursive: true });
 const browser = await chromium.launch({
   args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'],
 });
-const page = await browser.newPage({ viewport: { width: 1280, height: 760 } });
+const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 const errors = [];
 page.on('pageerror', (e) => errors.push(e.message));
 page.on('console', (m) => m.type() === 'error' && errors.push(m.text()));
 
 let step = 0;
-const shot = (name) => page.screenshot({ path: `${out}/${String(++step).padStart(2, '0')}-${name}.png` });
-const g = (expr) => page.evaluate(expr);
+const shot = (name) => page.screenshot({ path: `${out}/${String(++step).padStart(2, '0')}-${name}.png`, timeout: 120000 });
+const g = (fn, arg) => page.evaluate(fn, arg);
 const advance = (s) => page.evaluate((s) => window.__game.advance(s), s);
 const assert = (cond, msg) => {
   if (!cond) {
@@ -44,184 +44,158 @@ const assert = (cond, msg) => {
   }
   console.log('  ✓', msg);
 };
+const click = async (button = 'left') => {
+  await page.mouse.move(640, 360);
+  await page.mouse.down({ button });
+  await page.mouse.up({ button });
+};
 
 try {
   await page.goto(url, { waitUntil: 'load' });
-  await page.waitForFunction(() => !!window.__game, null, { timeout: 30000 });
-  await shot('intro');
-  await page.click('text=Vardiyayı Başlat');
-  assert((await g(() => window.__game.phase)) === 'playing', 'game starts');
+  await page.waitForFunction(() => window.__game && window.__game.ready, null, { timeout: 240000 });
+  await g(() => window.__game.freeze());
+  await advance(0.05);
+  await shot('title');
 
-  // --- real driving: forward, turn in place, collision
-  console.log('Driving');
-  const c0 = await g(() => window.__game.cart);
+  console.log('Shift start');
+  await page.click('text=Vardiyaya Başla');
+  await advance(0.4);
+  assert((await g(() => window.__game.phase)) === 'incoming', 'phone rings with an incoming order');
+  await shot('incoming-order');
+  await page.keyboard.press('Enter');
+  await advance(0.2);
+  assert((await g(() => window.__game.phase)) === 'playing', 'Enter accepts the order and starts the clock');
+
+  console.log('Movement');
+  const p0 = await g(() => window.__game.player);
   await page.keyboard.down('w');
   await advance(1.0);
   await page.keyboard.up('w');
-  const c1 = await g(() => window.__game.cart);
-  assert(c1.z < c0.z - 2, `W drives forward (z ${c0.z.toFixed(2)} → ${c1.z.toFixed(2)})`);
-  await page.keyboard.down('a');
-  await advance(0.6);
-  await page.keyboard.up('a');
-  const c2 = await g(() => window.__game.cart);
-  assert(Math.abs(c2.heading - c1.heading) > 0.5, 'A turns the cart');
-  await page.keyboard.down('Space');
-  await advance(0.5);
-  await page.keyboard.up('Space');
-  // drive into the snacks gondola and make sure we cannot pass through it
-  await g(() => window.__game.teleport(-6.5, 0, -Math.PI / 2));
+  const p1 = await g(() => window.__game.player);
+  assert(p1.z < p0.z - 2, `W walks forward (z ${p0.z.toFixed(2)} → ${p1.z.toFixed(2)})`);
+  await page.mouse.move(640, 360);
+  await page.mouse.down();
+  await page.mouse.move(760, 360, { steps: 6 });
+  await page.mouse.up();
+  await advance(0.1);
+  const p2 = await g(() => window.__game.player);
+  assert(Math.abs(p2.yaw - p1.yaw) > 0.1, 'mouse drag turns the view');
+  // run into a gondola: the cart must stop at it
+  await g(() => window.__game.teleport(-8, -3, -Math.PI / 2, 0));
   await page.keyboard.down('w');
-  await advance(2.5);
+  await advance(2.0);
   await page.keyboard.up('w');
-  const c3 = await g(() => window.__game.cart);
-  assert(c3.x > -8.5 + 0.5, `gondola blocks the cart (x=${c3.x.toFixed(2)})`);
-  await shot('driving');
+  const p3 = await g(() => window.__game.player);
+  assert(p3.x > -10.5 + 0.5 + 0.9, `gondola blocks the cart (x=${p3.x.toFixed(2)})`);
 
-  const order = ['milk_full', 'eggs_10', 'cheese_white', 'bread_white', 'tomato', 'banana', 'water_5l', 'chips_potato', 'chips_potato', 'dish_soap'];
+  async function pick(pid) {
+    assert(await g((p) => window.__game.goToProduct(p), pid), `walked to ${pid}`);
+    await advance(0.15);
+    const t = await g(() => window.__game.target);
+    assert(t && t.kind === 'product' && t.productId === pid, `aiming at ${pid}`);
+    await click('left');
+    await advance(0.5);
+    const s = await g(() => window.__game.session);
+    assert(s.tray[0] === pid, `holding ${pid}`);
+  }
 
-  async function goTo(productId) {
-    const ok = await page.evaluate((pid) => {
-      const G = window.__game;
-      const d = G.displays.find((x) => x.productId === pid);
-      if (!d) return false;
-      const reach = d.depth / 2 + 0.95;
-      G.teleport(d.x + Math.sin(d.angle) * reach, d.z + Math.cos(d.angle) * reach, d.angle + Math.PI);
-      return true;
-    }, productId);
+  async function bag(i, expectOk = true) {
+    await g((i) => window.__game.aimBag(i), i);
     await advance(0.1);
-    return ok;
-  }
-
-  async function pick(productId) {
-    assert(await goTo(productId), `found a display for ${productId}`);
-    const target = await g(() => window.__game.target);
-    assert(target && target.productId === productId, `targeting ${productId}`);
-    const before = (await g(() => window.__game.session)).tray.length;
-    await page.keyboard.press('e');
+    const t = await g(() => window.__game.target);
+    assert(t && t.kind === 'bag' && t.index === i, `aiming at bag ${i + 1}`);
+    const before = (await g(() => window.__game.session)).bags[i].items.length;
+    await click('left');
     await advance(0.6);
-    const after = (await g(() => window.__game.session)).tray.length;
-    assert(after === before + 1, `picked ${productId} (tray ${after})`);
+    const after = (await g(() => window.__game.session)).bags[i].items.length;
+    if (expectOk) assert(after === before + 1, `placed into bag ${i + 1} (${after} items)`);
+    else assert(after === before, `bag ${i + 1} rejected the item`);
   }
 
-  async function openPanel() {
-    if (await page.isHidden('.panel')) await page.keyboard.press('Tab');
-    await advance(0.05);
-    assert(await page.isVisible('.panel'), 'cart panel open');
-  }
-
-  async function closePanel() {
-    if (await page.isVisible('.panel')) await page.keyboard.press('Tab');
-    await advance(0.05);
-  }
-
-  /** Bag everything in the tray into the first bag that accepts it (via UI clicks). */
-  async function bagAll() {
-    await openPanel();
-    for (const i of [0, 1, 2]) {
-      const folded = await page.$(`.bags .bag:nth-child(${i + 1}) .btn`);
-      if (folded) await folded.click();
-    }
-    let guard = 0;
-    while ((await g(() => window.__game.session)).tray.length && guard++ < 20) {
-      const before = await g(() => window.__game.session);
-      const pid = before.tray[0];
-      let placed = false;
-      for (const bi of [0, 1, 2]) {
-        await page.click('.tray .slot.filled >> nth=0');
-        await page.click(`.bags .bag:nth-child(${bi + 1})`);
-        await advance(0.05);
-        const s = await g(() => window.__game.session);
-        if (s.bags[bi].items.length > before.bags[bi].items.length) {
-          console.log(`    bagged ${pid} → bag ${bi + 1}`);
-          placed = true;
-          break;
-        }
-      }
-      assert(placed, `${pid} placed in some bag`);
-    }
-  }
-
-  // --- wrong product first: should be rejected with a penalty, then returned
   console.log('Wrong product');
   await pick('milk_half');
-  await shot('picked-wrong');
-  await openPanel();
+  await shot('holding-wrong-milk');
   const t0 = await g(() => window.__game.timeLeft);
-  await page.click('.bags .bag:nth-child(1) .btn'); // open bag 1
-  await page.click('.tray .slot.filled >> nth=0');
-  await page.click('.bags .bag:nth-child(1)');
-  await advance(0.05);
+  await bag(0, false);
   const t1 = await g(() => window.__game.timeLeft);
   assert(t0 - t1 >= 4.9, `wrong product costs time (${(t0 - t1).toFixed(1)}s)`);
   assert((await g(() => window.__game.session)).mistakes === 1, 'mistake counted');
   await shot('wrong-rejected');
-  await page.click('.tray .slot.filled .slot-del');
-  await advance(0.05);
-  assert((await g(() => window.__game.session)).tray.length === 0, 'wrong product returned');
-  await closePanel();
+  await click('right');
+  await advance(0.4);
+  assert((await g(() => window.__game.session)).tray.length === 0, 'right click puts the item back');
 
-  // --- pick the order in two rounds (tray holds 6)
-  console.log('Picking round 1');
-  for (const pid of order.slice(0, 6)) await pick(pid);
-  await shot('tray-full');
-  await bagAll();
-  await shot('bagged-round1');
-  await closePanel();
-
-  console.log('Picking round 2');
-  for (const pid of order.slice(6)) await pick(pid);
-  await bagAll();
-  await shot('all-bagged');
-
-  // --- close the order
-  const btn = await page.$('.close-order');
-  assert(!(await btn.isDisabled()), 'close order button enabled');
-  await btn.click();
+  console.log('Picking + bagging');
+  const plan = [
+    ['milk_full', 0],
+    ['eggs_10', 0],
+    ['cheese_white', 0],
+    ['bread_white', 0],
+    ['tomato', 1],
+    ['banana', 1],
+    ['water_5l', 1],
+    ['chips_potato', 1],
+    ['chips_potato', 1],
+    ['dish_soap', 2],
+  ];
+  for (const [pid, bi] of plan) {
+    await pick(pid);
+    if (pid === 'water_5l') {
+      // bag 1 holds eggs: the rule must refuse 5L water there (no penalty)
+      const tw = await g(() => window.__game.timeLeft);
+      await page.keyboard.press('1');
+      await advance(0.3);
+      assert((await g(() => window.__game.session)).tray[0] === 'water_5l', 'eggs + 5L water rule refuses bag 1');
+      assert(tw - (await g(() => window.__game.timeLeft)) < 1, 'rule refusal has no time penalty');
+    }
+    if (pid === 'banana') await shot('holding-banana');
+    await bag(bi);
+    if (pid === 'bread_white') await shot('bag1-filled');
+  }
+  await page.keyboard.press('Tab');
   await advance(0.1);
-  assert((await g(() => window.__game.phase)) === 'courierArriving', 'courier called');
+  await shot('phone-list-complete');
 
-  // --- drive (keyboard) into the delivery zone from just inside the store
-  console.log('Delivery');
-  const deliveryZ = await g(() => window.__game.delivery.z);
-  await g(() => window.__game.teleport(0, 5, 0));
+  console.log('Close order + courier');
+  await page.keyboard.press('f');
+  await advance(0.2);
+  assert((await g(() => window.__game.phase)) === 'courierArriving', 'F closes the order, courier is on the way');
+  await advance(1.5);
+  await shot('courier-on-the-way');
+  // walk to the delivery spot with the keyboard
+  const del = await g(() => window.__game.layout.delivery);
+  await g(() => window.__game.teleport(0, 7.5, 0, 0.05));
   await page.keyboard.down('w');
   for (let i = 0; i < 40; i++) {
     await advance(0.05);
-    const c = await g(() => window.__game.cart);
-    if (c.z > deliveryZ - 0.9) break;
+    const p = await g(() => window.__game.player);
+    if (p.z > del.z - 0.9) break;
   }
   await page.keyboard.up('w');
-  await page.keyboard.down('Space');
   await advance(0.6);
-  await page.keyboard.up('Space');
-  await advance(3.5);
-  await shot('courier-arriving');
-  for (let i = 0; i < 20 && (await g(() => window.__game.phase)) !== 'awaitingHandover'; i++) await advance(0.5);
-  assert((await g(() => window.__game.phase)) === 'awaitingHandover', 'courier arrived and waits');
-  const c = await g(() => window.__game.cart);
-  const del = await g(() => window.__game.delivery);
-  assert(Math.hypot(c.x - del.x, c.z - del.z) <= del.radius, `cart in delivery zone (${c.x.toFixed(2)}, ${c.z.toFixed(2)})`);
+  for (let i = 0; i < 30 && (await g(() => window.__game.phase)) !== 'awaitingHandover'; i++) await advance(0.5);
+  assert((await g(() => window.__game.phase)) === 'awaitingHandover', 'courier arrived and waits at the door');
   await shot('courier-waiting');
   await page.keyboard.press('e');
   await advance(0.1);
-  assert((await g(() => window.__game.phase)) === 'handover', 'handover started');
-  await advance(1.0);
+  assert((await g(() => window.__game.phase)) === 'handover', 'E hands the bags to the courier');
+  await advance(1.2);
   await shot('handover');
   for (let i = 0; i < 30 && (await g(() => window.__game.phase)) !== 'won'; i++) await advance(0.5);
-  assert((await g(() => window.__game.phase)) === 'won', 'game won');
-  await page.waitForTimeout(300);
+  assert((await g(() => window.__game.phase)) === 'won', 'order delivered: game won');
+  await page.waitForTimeout(400);
   await shot('won');
+  assert((await g(() => window.__game.score)) > 0, 'score awarded');
 
-  // --- restart works
-  await page.click('text=Tekrar Oyna');
-  await advance(0.1);
+  console.log('Restart + time-out');
+  await page.click('text=Bir Vardiya Daha');
+  await advance(0.2);
   const s = await g(() => ({ phase: window.__game.phase, t: window.__game.timeLeft, tray: window.__game.session.tray.length }));
-  assert(s.phase === 'playing' && s.tray === 0 && s.t > 299, 'restart resets the game');
-
-  // --- time-out path
+  assert(s.phase === 'incoming' && s.tray === 0 && s.t === 300, 'restart resets the shift');
+  await page.keyboard.press('Enter');
   await advance(301);
   assert((await g(() => window.__game.phase)) === 'lost', 'running out of time loses');
-  await page.waitForTimeout(300);
+  await page.waitForTimeout(400);
   await shot('lost');
 
   assert(errors.length === 0, `no page errors${errors.length ? ': ' + errors.join(' | ') : ''}`);

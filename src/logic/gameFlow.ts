@@ -1,13 +1,14 @@
 /**
  * Game phase state machine + countdown timer.
  *
- *  intro ─start→ playing ─orderClosed→ courierArriving ─courierArrived→
+ *  intro ─start→ incoming ─accept→ playing ─orderClosed→ courierArriving ─courierArrived→
  *  awaitingHandover ─handover→ handover ─handoverDone→ won
  *  (any timed phase) ─time runs out→ lost
  */
 
 export type Phase =
   | 'intro'
+  | 'incoming'
   | 'playing'
   | 'courierArriving'
   | 'awaitingHandover'
@@ -35,12 +36,18 @@ export class GameFlow {
 
   /** True while the player may drive the cart. */
   get canDrive(): boolean {
-    return !this.paused && (this.phase === 'playing' || this.phase === 'courierArriving' || this.phase === 'awaitingHandover');
+    return !this.paused && (this.phase === 'incoming' || this.phase === 'playing' || this.phase === 'courierArriving' || this.phase === 'awaitingHandover');
   }
 
+  /** Shift starts: the phone rings with the incoming order (timer not running yet). */
   start(): void {
     if (this.phase !== 'intro') return;
-    this.phase = 'playing';
+    this.phase = 'incoming';
+  }
+
+  /** Order accepted in the app: the clock starts. */
+  accept(): boolean {
+    return this.go('incoming', 'playing');
   }
 
   /** Advances the clock. Returns true on the frame the time runs out. */
