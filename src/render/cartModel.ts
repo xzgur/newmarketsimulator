@@ -324,6 +324,11 @@ export class ShoppingCart {
     return this.bags[i].root.localToWorld(new THREE.Vector3(0, 0.45, 0));
   }
 
+  /** Centre of a bag's clickable volume (world space). */
+  bagAimPoint(i: number): THREE.Vector3 {
+    return this.bags[i].hit.getWorldPosition(new THREE.Vector3());
+  }
+
   rejectShake(i: number) {
     this.bags[i].shake = 0.4;
   }
@@ -365,6 +370,9 @@ export class ShoppingCart {
       b.handles.position.y = -0.36 * (1 - a);
       b.knot.visible = b.closed;
       b.items.visible = a > 0.5;
+      // the clickable volume follows the bag: flat when folded, tall when open
+      b.hit.scale.y = 0.3 + 0.7 * a;
+      b.hit.position.y = (0.46 * b.hit.scale.y) / 2;
       b.root.rotation.z = Math.sin(this.time * 50) * b.shake * 0.15;
       for (const it of b.items.children) {
         const drop = it.userData.drop as number;

@@ -57,6 +57,8 @@ export class Input {
     window.addEventListener('mouseup', () => (this.dragging = false));
     window.addEventListener('mousemove', (e) => {
       if (!this.enabled) return;
+      // pointer lock occasionally reports a huge bogus jump (e.g. when the cursor is re-centred)
+      if (Math.abs(e.movementX) > 250 || Math.abs(e.movementY) > 250) return;
       if (this.locked || this.dragging) {
         this.mdx += e.movementX;
         this.mdy += e.movementY;

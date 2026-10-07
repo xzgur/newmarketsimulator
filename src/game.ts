@@ -856,8 +856,11 @@ export class Game {
       },
       /** Aim at a bag in the cart. */
       aimBag(i: number) {
-        const w = self.cart.bagWorldPosition(i);
-        (this as { aim(x: number, y: number, z: number): void }).aim(w.x, w.y - 0.15, w.z);
+        self.rig.position.set(self.player.x, 0, self.player.z);
+        self.rig.rotation.y = self.player.yaw;
+        self.rig.updateMatrixWorld(true);
+        const w = self.cart.bagAimPoint(i);
+        (this as { aim(x: number, y: number, z: number): void }).aim(w.x, w.y, w.z);
       },
       /** Walk up to the nearest display holding `productId` and aim at one of its items. */
       goToProduct(productId: string): boolean {
