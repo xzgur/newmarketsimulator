@@ -17,6 +17,15 @@ let loaded: Assets | null = null;
 
 const base = import.meta.env.BASE_URL;
 
+/**
+ * URL of a file under public/. A host page may remap paths via
+ * window.__ASSET_MAP (e.g. when a host only serves certain file extensions).
+ */
+export function assetUrl(path: string): string {
+  const map = (window as unknown as { __ASSET_MAP?: Record<string, string> }).__ASSET_MAP;
+  return `${base}${map?.[path] ?? path}`;
+}
+
 export async function loadAssets(onProgress?: (p: number) => void): Promise<Assets> {
   if (loaded) return loaded;
   const loader = new GLTFLoader();
@@ -24,11 +33,11 @@ export async function loadAssets(onProgress?: (p: number) => void): Promise<Asse
   let charP = 0;
   const report = () => onProgress?.((kitP + charP) / 2);
   const [kit, chars] = await Promise.all([
-    loader.loadAsync(`${base}models/kit.glb`, (e) => {
+    loader.loadAsync(assetUrl('models/kit.glb'), (e) => {
       kitP = e.total ? e.loaded / e.total : 0.5;
       report();
     }),
-    loader.loadAsync(`${base}models/characters.glb`, (e) => {
+    loader.loadAsync(assetUrl('models/characters.glb'), (e) => {
       charP = e.total ? e.loaded / e.total : 0.5;
       report();
     }),

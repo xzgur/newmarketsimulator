@@ -901,6 +901,11 @@ export class Game {
       skipCourier() {
         self.courier.skipArrival();
       },
+      /** Jump straight to the win screen (UI checks). */
+      debugWin() {
+        self.flow.phase = 'handover';
+        self.win();
+      },
       /** Stop the rAF loop (tests drive frames with advance()). */
       freeze(on = true) {
         self.renderer.setAnimationLoop(on ? null : () => self.frame());

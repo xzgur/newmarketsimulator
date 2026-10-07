@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import type { StoreView } from './store';
+import { assetUrl } from './assets';
 import type { OutsideView } from './outside';
 import type { Post } from './post';
 
@@ -152,7 +153,7 @@ export class Lighting {
   async loadSky(def: MoodDef): Promise<THREE.Texture> {
     const hit = this.hdrCache.get(def.hdr);
     if (hit) return hit;
-    const tex = await new HDRLoader().loadAsync(`${import.meta.env.BASE_URL}hdr/${def.hdr}`);
+    const tex = await new HDRLoader().loadAsync(assetUrl(`hdr/${def.hdr}`));
     tex.mapping = THREE.EquirectangularReflectionMapping;
     this.hdrCache.set(def.hdr, tex);
     return tex;
