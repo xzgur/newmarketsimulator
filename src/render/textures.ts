@@ -143,7 +143,12 @@ export function textTexture(text: string, bg = 'rgba(20,24,33,0.85)', fg = '#fff
   roundRect(ctx, 4, 4, 504, 120, 40);
   ctx.fill();
   ctx.fillStyle = fg;
-  ctx.font = 'bold 54px "Trebuchet MS", Arial, sans-serif';
+  let size = 54;
+  ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`;
+  while (ctx.measureText(text).width > 460 && size > 20) {
+    size -= 2;
+    ctx.font = `bold ${size}px "Trebuchet MS", Arial, sans-serif`;
+  }
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillText(text, 256, 66);
