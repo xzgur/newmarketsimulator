@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { buildLayout, type Display, type StoreLayout } from './data/layout';
 import type { LevelDef } from './data/order';
 import { getProduct, formatPrice } from './data/products';
-import { createPlayer, look, PLAYER, speedOf, stepPlayer, wrapAngle, type PlayerState } from './logic/player';
+import { createPlayer, lateralSpeed, look, PLAYER, speedOf, stepPlayer, wrapAngle, type MoveInput, type PlayerState } from './logic/player';
 import { GameFlow } from './logic/gameFlow';
 import { OrderSession } from './logic/order';
 import { loadAssets } from './render/assets';
@@ -27,6 +27,7 @@ import {
   applyResult,
   buyUpgrade,
   finishDay,
+  makeOrder,
   newRuleOn,
   packOrder,
   planDay,
@@ -83,9 +84,26 @@ export class Game {
   private session!: OrderSession;
   private flow!: GameFlow;
   private career: Career = loadCareer();
-  private plan: DayPlan = planDay(this.career.day, this.career);
+  private plan: DayPlan = planDay(this.career.day);
   private results: OrderResult[] = [];
-  private level: LevelDef = this.plan.orders[0];
+  private level: LevelDef = makeOrder(this.career.day, 0, this.career);
+  /** Seconds since the store opened today. */
+  private dayT = 0;
+  /** Closing time reached: no new orders. */
+  private closing = false;
+  private paClosed = false;
+  private goalCheered = false;
+  private nextOrderT = -1;
+  private endDayT = -1;
+  private driftTipT = -1;
+  private moodK = -1;
+  // drift
+  private driftT = 0;
+  private driftLevel = 0;
+  private wasDrifting = false;
+  private boostT = 0;
+  private boostLevel = 0;
+  private sparkT = 0;
   private hud: Hud;
   private input: Input;
   private sfx = new Sfx();
@@ -136,7 +154,7 @@ export class Game {
       {
         play: () => this.startDay(),
         buy: (id) => this.buy(id),
-        restart: () => this.startOrder(this.level.index),
+        restart: () => this.startDay(this.plan.day),
         resume: () => this.setPaused(false),
         toMenu: () => this.toMenu(),
         next: () => this.onNext(),
@@ -168,7 +186,7 @@ export class Game {
       this.sfx.setMusic(true);
     };
     window.addEventListener('keydown', (e) => {
-      if (e.code === 'Enter' && (this.hud.currentScreen === 'review' || this.hud.currentScreen === 'dayEnd')) this.onNext();
+      if (e.code === 'Enter' && this.hud.currentScreen === 'dayEnd') this.onNext();
     });
     window.addEventListener('pointerdown', unlock, { once: true });
     window.addEventListener('keydown', unlock, { once: true });
@@ -188,7 +206,7 @@ export class Game {
   }
 
   private inGame(): boolean {
-    return ['incoming', 'playing', 'courierArriving', 'awaitingHandover', 'handover'].includes(this.flow.phase);
+    return ['waiting', 'incoming', 'playing', 'courierArriving', 'awaitingHandover', 'handover'].includes(this.flow.phase);
   }
 
   private async init(moodParam: string | null) {
@@ -201,6 +219,7 @@ export class Game {
       this.hud.setLoading(0.75, 'menu.loading');
       await nextFrame();
       this.lighting = new Lighting(this.renderer, this.scene, this.settings.quality !== 'low');
+      await this.lighting.preloadSkies();
       this.outside = new OutsideView(this.layout.bounds.maxZ);
       this.scene.add(this.outside.group);
       this.buildWorld(this.level);
@@ -232,7 +251,7 @@ export class Game {
     this.thrown = [];
     this.held = null;
     this.store = new StoreView(this.layout);
-    this.people = new People(this.layout, level.shoppers);
+    this.people = new People(this.layout, this.plan.shoppers);
     this.people.onSpeak = (text, x, z) => {
       if (Math.hypot(x - this.player.x, z - this.player.z) < 9) this.sfx.babble(text, 0.9 + Math.random() * 0.4);
     };
@@ -270,12 +289,20 @@ export class Game {
     paintCart(RANKS[i].paint, i === RANKS.length - 1);
   }
 
-  private moodId(): MoodId {
-    return this.settings.mood ?? this.level.mood;
+  /** Fixed atmosphere from settings, or the time of day of the running day. */
+  private async applyMood() {
+    if (!this.lighting || !this.post) return;
+    this.moodK = -1;
+    if (this.settings.mood) await this.lighting.apply(this.settings.mood, this.store, this.outside, this.post);
+    else this.updateTimeOfDay(true);
   }
 
-  private async applyMood() {
-    if (this.lighting && this.post) await this.lighting.apply(this.moodId(), this.store, this.outside, this.post);
+  private updateTimeOfDay(force = false) {
+    if (this.settings.mood || !this.lighting || !this.post) return;
+    const k = this.inGame() ? Math.min(1, this.dayT / this.plan.length) : 0.1;
+    if (!force && Math.abs(k - this.moodK) < 0.002) return;
+    this.moodK = k;
+    this.lighting.setTimeOfDay(k, this.store, this.outside, this.post);
   }
 
   private onSettings(s: Settings, key: keyof Settings) {
@@ -327,50 +354,83 @@ export class Game {
     return [1, 2, 3, 4, 5, 6, 7, 8].map((i) => t(`note.${i}`));
   }
 
-  /** A new work day with freshly generated orders. */
+  /** A new work day: the store opens at 8 AM and orders keep coming until 8 PM. */
   private startDay(day = this.career.day) {
-    this.plan = planDay(day, this.career, this.notes());
+    this.plan = planDay(day);
     this.results = [];
-    this.startOrder(0);
-  }
-
-  private startOrder(index: number) {
+    this.dayT = 0;
+    this.closing = false;
+    this.paClosed = false;
+    this.goalCheered = false;
+    this.nextOrderT = -1;
+    this.endDayT = -1;
+    this.resetDrift();
     this.sfx.unlock();
     this.sfx.setMusic(true);
     this.sfx.setMusicRate(1);
-    const level = this.plan.orders[index];
-    this.results.length = index;
     this.sfx.ringStop();
     this.sfx.setEngine(0);
-    this.buildWorld(level);
-    void this.applyMood();
+    this.buildWorld(makeOrder(day, 0, this.career, this.notes()));
     this.hud.setCareer(this.career);
     this.hud.setPhoneOpen(false);
-    this.flow.start();
     this.hud.showScreen(null);
     this.hud.setPlaying(true);
-    this.hud.setPhoneScreen('incoming');
-    if (index === 0 && level.day <= 2) {
+    void this.applyMood();
+    if (day <= 2) {
       this.hud.showHint(true);
       this.hintTimer = 25;
-    }
-    const rule = index === 0 ? newRuleOn(level.day) : null;
-    this.hud.orderBanner(level, this.plan.goal, rule ? t(`rule.${rule}`) : null);
-    this.sfx.ringStart();
+      this.driftTipT = 40;
+    } else this.driftTipT = -1;
+    const rule = newRuleOn(day);
+    this.hud.dayBanner(this.plan, rule ? t(`rule.${rule}`) : null);
     this.input.enabled = true;
     this.wantLock = true;
     this.input.requestLock();
     this.input.clear();
-    this.hud.toast(t('t.ringing'), 'info', 4000);
+    // store PA opens the day
+    this.paNext = 'pa.open';
+    this.paTimer = 3;
+    this.beginOrder();
   }
 
-  /** "Next" on the review / end-of-day screens. */
+  /** The phone rings with the current order. */
+  private beginOrder() {
+    this.flow.start();
+    this.hud.setPhoneScreen('incoming');
+    this.sfx.ringStart();
+    this.hud.toast(t('t.ringing'), 'info', 4000);
+    if (this.level.express) this.hud.toast(t('t.express'), 'info', 4000);
+  }
+
+  /** Next order of the day — the player keeps going from wherever they are. */
+  private nextOrder() {
+    const level = makeOrder(this.plan.day, this.level.index + 1, this.career, this.notes());
+    this.level = level;
+    this.store.restock();
+    this.store.deliveryActive = false;
+    // a fresh cart with the new order's bags (the old ones left with the courier)
+    if (this.held) this.held.removeFromParent();
+    this.held = null;
+    this.hands.reachTarget = 0;
+    this.rig.remove(this.cart.group);
+    this.paintCart();
+    this.cart = new ShoppingCart(level.order.bagCount);
+    this.cart.group.position.set(0, 0, PLAYER.cartOffset);
+    this.rig.add(this.cart.group);
+    this.session = new OrderSession(level.order);
+    this.flow = new GameFlow(level.order.timeLimit);
+    this.cart.sync(this.session);
+    this.hud.setLevel(level);
+    this.target = null;
+    this.lastTick = -1;
+    this.warned = 0;
+    this.handoverT = 0;
+    this.beginOrder();
+  }
+
+  /** "Next" on the end-of-day screen. */
   private onNext() {
-    const scr = this.hud.currentScreen;
-    if (scr === 'review') {
-      if (this.level.index + 1 < this.plan.orders.length) this.startOrder(this.level.index + 1);
-      else this.endDay();
-    } else if (scr === 'dayEnd') this.startDay();
+    if (this.hud.currentScreen === 'dayEnd') this.startDay();
   }
 
   private endDay() {
@@ -379,10 +439,20 @@ export class Game {
     this.career = career;
     saveCareer(career);
     this.hud.setCareer(career);
+    this.sfx.ringStop();
+    this.sfx.setSkid(0);
+    this.sfx.setCartSpeed(0);
+    this.sfx.setEngine(0);
+    this.sfx.setMusicRate(1);
     if (passed) {
       this.sfx.win();
       this.post.pulse('#FFD23F', 0.3);
     } else this.sfx.lose();
+    this.flow = new GameFlow(0);
+    this.hud.setPlaying(false);
+    this.input.enabled = false;
+    this.wantLock = false;
+    this.input.releaseLock();
     this.hud.showDayEnd(this.plan, this.results, passed);
     this.hud.showScreen('dayEnd');
   }
@@ -434,10 +504,6 @@ export class Game {
     this.hud.setPhoneScreen('picking');
     this.hud.setPhoneOpen(true);
     this.hud.toast(t('t.accepted'), 'ok');
-    // store PA: opening announcement on the first order, closing on the last
-    const last = this.level.index === this.level.total - 1;
-    this.paNext = this.level.index === 0 ? 'pa.open' : last ? 'pa.closing' : null;
-    this.paTimer = this.paNext ? 4 : 14;
     if (this.level.tutorial) setTimeout(() => this.hud.toast(t('tut.findAisle'), 'info', 5000), 2500);
     setTimeout(() => {
       if (this.flow.phase === 'playing' && this.hud.phoneOpen) this.hud.setPhoneOpen(false);
@@ -648,26 +714,43 @@ export class Game {
     this.finishOrder(false);
   }
 
-  /** Scores the order, pays out and shows the customer's review. */
+  /** Scores the order and pays out; the review pops up as a notification and the day goes on. */
   private finishOrder(delivered: boolean) {
     this.sfx.setMusicRate(1);
+    this.sfx.ringStop();
     const r = scoreOrder(this.level, this.career, delivered, this.flow.timeLeft, this.session.mistakes);
-    this.results[this.level.index] = r;
+    this.results.push(r);
     const { career, promoted } = applyResult(this.career, r);
     this.career = career;
     saveCareer(career);
     this.hud.setCareer(career);
-    this.hud.showReview(this.level, r, this.results, promoted);
-    this.hud.showScreen('review');
+    this.hud.reviewToast(this.level, r);
     if (promoted) {
       this.paintCart();
+      this.hud.promotion(promoted);
       this.sfx.win();
       this.post.pulse('#FFD23F', 0.4);
-    } else if (delivered && r.stars >= 4) setTimeout(() => this.sfx.combo(r.stars), 500);
-    this.hud.setPlaying(false);
-    this.input.enabled = false;
-    this.wantLock = false;
-    this.input.releaseLock();
+    } else if (delivered && r.stars >= 4) this.sfx.combo(r.stars);
+    if (!delivered) {
+      this.courier.cancel();
+      this.store.deliveryActive = false;
+    }
+    const done = this.results.filter((x) => x.delivered).length;
+    if (delivered && done === this.plan.goal && !this.goalCheered) {
+      this.goalCheered = true;
+      setTimeout(() => this.hud.toast(t('t.goalReached'), 'ok', 4500), 1200);
+    }
+    // back to free roaming until the next order rings (or the day ends)
+    this.flow.idle();
+    this.hud.setUrgency(0);
+    if (this.closing) {
+      this.endDayT = 2.5;
+      this.hud.nextOrderIn = -1;
+    } else {
+      this.nextOrderT = 4.5;
+      this.hud.nextOrderIn = this.nextOrderT;
+    }
+    this.hud.setPhoneScreen('waiting');
   }
 
   // ---------------------------------------------------------------- loop
@@ -733,7 +816,9 @@ export class Game {
       look(this.player, l.yaw, l.pitch);
       const mv = this.input.move();
       if (flow.phase === 'handover') mv.forward = mv.strafe = mv.turn = 0;
-      const hit = stepPlayer(this.player, mv, dt, this.layout.colliders, this.people.blockers(), speedMultiplier(this.career));
+      const boostMul = this.boostT > 0 ? (this.boostLevel > 1 ? 1.5 : 1.32) : 1;
+      const hit = stepPlayer(this.player, mv, dt, this.layout.colliders, this.people.blockers(), speedMultiplier(this.career) * boostMul);
+      this.updateDrift(dt, mv, hit);
       this.bumpCooldown -= dt;
       const sp = speedOf(this.player);
       if (hit && this.bumpCooldown <= 0 && sp > 1.4) {
@@ -742,8 +827,12 @@ export class Game {
         this.bumpCooldown = 0.6;
         this.people.bump(this.player.x + Math.sin(this.player.yaw) * PLAYER.cartOffset, this.player.z + Math.cos(this.player.yaw) * PLAYER.cartOffset, sp);
       }
-      this.fovKick += ((mv.sprint && mv.forward > 0 ? 1 : 0) - this.fovKick) * Math.min(1, dt * 4);
-    } else this.input.look();
+      const kick = this.boostT > 0 ? 1.8 : mv.sprint && mv.forward > 0 ? 1 : 0;
+      this.fovKick += (kick - this.fovKick) * Math.min(1, dt * 4);
+    } else {
+      this.input.look();
+      if (this.wasDrifting) this.resetDrift();
+    }
     const speed = speedOf(this.player);
     this.sfx.setCartSpeed(flow.paused || !this.inGame() ? 0 : speed / PLAYER.sprint);
 
@@ -763,8 +852,10 @@ export class Game {
         this.handoverT -= dt;
         if (this.handoverT <= 0) this.win();
       }
+      this.updateDay(dt);
+      if (!this.inGame()) return;
       this.paTimer -= dt;
-      if (this.paTimer <= 0 && flow.phase === 'playing') {
+      if (this.paTimer <= 0) {
         this.paTimer = 40 + Math.random() * 25;
         let key = this.paNext;
         this.paNext = null;
@@ -773,12 +864,16 @@ export class Game {
           key = `pa.${this.paIndex}`;
         }
         const text = t(key);
-        this.sfx.announce(text);
+        this.sfx.announce(text, key);
         this.hud.paSubtitle(text);
       }
       if (this.hintTimer > 0) {
         this.hintTimer -= dt;
         if (this.hintTimer <= 0) this.hud.showHint(false);
+      }
+      if (this.driftTipT > 0) {
+        this.driftTipT -= dt;
+        if (this.driftTipT <= 0) this.hud.toast(t('t.driftTip'), 'info', 6000);
       }
     }
     this.sfx.setEngine(flow.paused ? 0 : this.courier.engineLevel);
@@ -786,6 +881,109 @@ export class Game {
     this.updateTarget();
     this.updateHud(dt);
     this.updateRadar();
+  }
+
+  /** In-game wall clock: 08:00 at opening, 20:00 at closing. */
+  private dayClock(): string {
+    const k = Math.min(1, this.dayT / this.plan.length);
+    const mins = Math.floor(8 * 60 + k * 12 * 60);
+    return `${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}`;
+  }
+
+  /** Day clock: closing time, pacing of new orders, end of the day. */
+  private updateDay(dt: number) {
+    if (!this.inGame()) return;
+    this.dayT += dt;
+    const len = this.plan.length;
+    if (!this.paClosed && this.dayT >= len * 0.86) {
+      this.paClosed = true;
+      this.paNext = 'pa.closing';
+      this.paTimer = Math.min(this.paTimer, 0.5);
+    }
+    if (!this.closing && this.dayT >= len) {
+      this.closing = true;
+      this.hud.toast(t('t.closing'), 'info', 4500);
+      this.sfx.chime();
+      // nothing in progress: lights out
+      if (this.flow.phase === 'waiting' || this.flow.phase === 'incoming') {
+        this.sfx.ringStop();
+        this.flow.idle();
+        this.nextOrderT = -1;
+        this.endDayT = 2.5;
+        this.hud.nextOrderIn = -1;
+        this.hud.setPhoneScreen('waiting');
+      }
+    }
+    if (this.nextOrderT > 0) {
+      this.nextOrderT -= dt;
+      this.hud.nextOrderIn = Math.max(0.01, this.nextOrderT);
+      if (this.nextOrderT <= 0) {
+        this.nextOrderT = -1;
+        if (!this.closing) this.nextOrder();
+      }
+    }
+    if (this.endDayT > 0) {
+      this.endDayT -= dt;
+      if (this.endDayT <= 0) {
+        this.endDayT = -1;
+        this.endDay();
+        return;
+      }
+    }
+    this.updateTimeOfDay();
+  }
+
+  private resetDrift() {
+    this.driftT = 0;
+    this.driftLevel = 0;
+    this.wasDrifting = false;
+    this.sfx.setSkid(0);
+    this.hud.setDrift(false, 0, 0);
+  }
+
+  /**
+   * Hold Space while moving and turn: the cart slides. Sliding charges a
+   * boost (blue → orange sparks); letting go fires it. Bumping loses it.
+   */
+  private updateDrift(dt: number, mv: MoveInput, hit: boolean) {
+    const p = this.player;
+    const sp = speedOf(p);
+    const lat = Math.abs(lateralSpeed(p));
+    const sliding = !!mv.drift && sp > PLAYER.driftMinSpeed;
+    this.boostT = Math.max(0, this.boostT - dt);
+    if (sliding) {
+      if (hit) this.driftT *= 0.5;
+      else if (lat > 0.4) this.driftT += dt * Math.min(1.6, Math.max(0.6, lat / 1.0));
+      const lvl = this.driftT > 1.5 ? 2 : this.driftT > 0.6 ? 1 : 0;
+      if (lvl > this.driftLevel) {
+        this.sfx.driftLevel(lvl);
+        this.hud.popup(t(lvl > 1 ? 'hud.driftSuper' : 'hud.driftBoost'), 'plus');
+      }
+      this.driftLevel = lvl;
+      this.wasDrifting = true;
+      this.sfx.setSkid(Math.min(1, 0.25 + lat / 2.6));
+      this.sparkT -= dt;
+      if (this.sparkT <= 0 && lat > 0.4) {
+        this.sparkT = 0.045;
+        const color = lvl > 1 ? '#FF8F3A' : lvl > 0 ? '#3FA2F7' : '#e9e2d0';
+        for (const side of [-0.3, 0.3]) {
+          const at = new THREE.Vector3(side, 0.06, PLAYER.cartOffset + 0.25).applyMatrix4(this.rig.matrixWorld);
+          this.particles.sparkle(at, color, lvl > 0 ? 3 : 2, lvl > 0 ? 1.4 : 0.6);
+        }
+      }
+      this.hud.setDrift(true, Math.min(1, this.driftT / 1.5), lvl);
+      return;
+    }
+    if (this.wasDrifting && this.driftLevel > 0) {
+      // release: boost!
+      this.boostLevel = this.driftLevel;
+      this.boostT = this.driftLevel > 1 ? 1.6 : 0.9;
+      this.sfx.boost(this.driftLevel);
+      this.hud.popup(t(this.driftLevel > 1 ? 'hud.superBoost' : 'hud.boost'), 'combo');
+      this.post.pulse(this.driftLevel > 1 ? '#FF8F3A' : '#3FA2F7', 0.18);
+      this.shake = Math.max(this.shake, 0.1);
+    }
+    if (this.wasDrifting) this.resetDrift();
   }
 
   /** Low-time drama: red pulsing edges, shaking timer, ticking, faster music. */
@@ -954,13 +1152,12 @@ export class Game {
   private updateHud(dt: number) {
     const flow = this.flow;
     const s = this.session;
-    this.hud.setTimer(flow.timeLeft, flow.timerRunning);
+    this.hud.setTimer(flow.timeLeft, flow.timerRunning, flow.phase !== 'waiting');
     if (this.hud.courierEta > 0 && flow.phase === 'courierArriving') this.hud.courierEta = Math.max(0.5, this.hud.courierEta - dt);
-    this.hud.setCash(money(this.career.cash));
+    this.hud.setDayInfo(this.plan.day, this.dayClock(), this.results.filter((r) => r.delivered).length, this.plan.goal, this.closing, money(this.career.cash));
     this.hud.updatePhone(s, s.tray[0] ?? null);
     this.hud.setHeld(flow.phase === 'playing' ? (s.tray[0] ?? null) : null, s);
-    const d = new Date();
-    this.hud.setClock(`${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`);
+    this.hud.setClock(this.dayClock());
 
     const tg = this.target;
     let hover: string | null = null;
@@ -1030,7 +1227,10 @@ export class Game {
         return self.flow?.phase;
       },
       get level() {
-        return { day: self.level.day, index: self.level.index, total: self.level.total, express: self.level.express };
+        return { day: self.level.day, index: self.level.index, express: self.level.express };
+      },
+      get day() {
+        return { ...self.plan, t: self.dayT, closing: self.closing, delivered: self.results.filter((r) => r.delivered).length, results: self.results.length };
       },
       get order() {
         return self.level.order;
@@ -1066,11 +1266,21 @@ export class Game {
         return self.score;
       },
       layout: this.layout,
+      hud: this.hud,
       startDay(day?: number) {
         self.startDay(day);
       },
-      startOrder(i: number) {
-        self.startOrder(i);
+      /** Skip straight to the next order of the day. */
+      skipOrder() {
+        self.sfx.ringStop();
+        self.nextOrder();
+      },
+      /** Jump the day clock (seconds since opening). */
+      setDayTime(sec: number) {
+        self.dayT = sec;
+      },
+      get drift() {
+        return { t: self.driftT, level: self.driftLevel, boost: self.boostT };
       },
       next() {
         self.onNext();

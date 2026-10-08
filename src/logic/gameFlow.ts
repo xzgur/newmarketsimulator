@@ -4,10 +4,13 @@
  *  intro ─start→ incoming ─accept→ playing ─orderClosed→ courierArriving ─courierArrived→
  *  awaitingHandover ─handover→ handover ─handoverDone→ won
  *  (any timed phase) ─time runs out→ lost
+ *  waiting: between two orders of a day — free to drive, no clock;
+ *  start() from waiting rings the next order.
  */
 
 export type Phase =
   | 'intro'
+  | 'waiting'
   | 'incoming'
   | 'playing'
   | 'courierArriving'
@@ -36,13 +39,18 @@ export class GameFlow {
 
   /** True while the player may drive the cart. */
   get canDrive(): boolean {
-    return !this.paused && (this.phase === 'incoming' || this.phase === 'playing' || this.phase === 'courierArriving' || this.phase === 'awaitingHandover');
+    return !this.paused && (this.phase === 'waiting' || this.phase === 'incoming' || this.phase === 'playing' || this.phase === 'courierArriving' || this.phase === 'awaitingHandover');
   }
 
   /** Shift starts: the phone rings with the incoming order (timer not running yet). */
   start(): void {
-    if (this.phase !== 'intro') return;
+    if (this.phase !== 'intro' && this.phase !== 'waiting') return;
     this.phase = 'incoming';
+  }
+
+  /** Free roaming between orders. */
+  idle(): void {
+    this.phase = 'waiting';
   }
 
   /** Order accepted in the app: the clock starts. */

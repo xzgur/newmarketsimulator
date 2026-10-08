@@ -50,6 +50,8 @@ export class StoreView {
   readonly group = new THREE.Group();
   private statics = new THREE.Group();
   private stock = new Map<string, DisplayStock>();
+  /** Products picked so far (for restocking between orders). */
+  private taken: { displayId: string; idx: number; matrix: THREE.Matrix4 }[] = [];
   private meshes = new Map<string, THREE.InstancedMesh>();
   private instanceOwner = new Map<string, string[]>();
   private displayById = new Map<string, Display>();
@@ -681,6 +683,7 @@ export class StoreView {
     const mesh = this.meshes.get(st.productId)!;
     const mat = new THREE.Matrix4();
     mesh.getMatrixAt(idx, mat);
+    this.taken.push({ displayId, idx, matrix: mat.clone() });
     const position = new THREE.Vector3();
     const quaternion = new THREE.Quaternion();
     mat.decompose(position, quaternion, new THREE.Vector3());
@@ -688,6 +691,19 @@ export class StoreView {
     mesh.instanceMatrix.needsUpdate = true;
     if (this.hover.userData.key === `${st.productId}:${idx}`) this.setHover(null);
     return { position, quaternion };
+  }
+
+  /** Staff refill the shelves: every picked product is back in place. */
+  restock() {
+    for (const t of this.taken) {
+      const st = this.stock.get(t.displayId);
+      if (!st) continue;
+      const mesh = this.meshes.get(st.productId)!;
+      mesh.setMatrixAt(t.idx, t.matrix);
+      mesh.instanceMatrix.needsUpdate = true;
+      st.instances.push(t.idx);
+    }
+    this.taken = [];
   }
 
   /** Outline around the hovered product instance. */

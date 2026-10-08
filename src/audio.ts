@@ -4,7 +4,10 @@
  * room reverb) + spoken store announcements.
  */
 import { assetUrl } from './render/assets';
-import { speechLang } from './i18n';
+import { getLang, speechLang } from './i18n';
+
+/** Languages with pre-rendered PA clips (scripts/build-announcements.py). */
+const PA_CLIP_LANGS = new Set(['en', 'de', 'es']);
 
 export class Sfx {
   private ctx: AudioContext | null = null;
@@ -21,6 +24,9 @@ export class Sfx {
   private wet!: GainNode;
   private noiseBuf!: AudioBuffer;
   private music: HTMLAudioElement | null = null;
+  private skid: { gain: GainNode; filter: BiquadFilterNode; squeal: OscillatorNode; squealGain: GainNode } | null = null;
+  private paClips = new Map<string, Promise<AudioBuffer | null>>();
+  private duck = 1;
   private rattle: { src: AudioBufferSourceNode; gain: GainNode; filter: BiquadFilterNode } | null = null;
   private engine: { osc: OscillatorNode; gain: GainNode } | null = null;
   private ringTimer: number | null = null;
@@ -130,7 +136,7 @@ export class Sfx {
     const m = this.vol.muffle;
     this.master.gain.setTargetAtTime(this.muted ? 0 : 0.75, t, 0.05);
     this.sfxBus.gain.setTargetAtTime(this.vol.sfx, t, 0.05);
-    this.musicGain.gain.setTargetAtTime(this.vol.music * 0.42, t, 0.1);
+    this.musicGain.gain.setTargetAtTime(this.vol.music * 0.42 * this.duck, t, 0.25);
     // m = 0: clean hi-fi; m = 1: tinny, far-away ceiling speakers
     const hp = 30 + m * 520;
     const lp = 18000 * Math.pow(2600 / 18000, m);
@@ -270,11 +276,53 @@ export class Sfx {
   }
 
   /** Chime + spoken announcement through the store PA (if enabled). */
-  announce(text: string) {
+  /**
+   * Store PA: chime, then the announcement from the ceiling speakers.
+   * Uses the pre-rendered megaphone clip for the current language when there
+   * is one; otherwise the browser's speech synthesis (same language only).
+   */
+  announce(text: string, key?: string) {
     if (!this.announcements || this.muted) return;
     this.chime();
-    const lang = speechLang();
-    setTimeout(() => void this.speak(text, lang), 1500);
+    const lang = getLang();
+    if (key && this.ctx && PA_CLIP_LANGS.has(lang)) {
+      void this.paClip(lang, key).then((buf) => {
+        if (buf) setTimeout(() => this.playPa(buf), 1400);
+        else setTimeout(() => void this.speak(text, speechLang()), 1500);
+      });
+      return;
+    }
+    setTimeout(() => void this.speak(text, speechLang()), 1500);
+  }
+
+  private paClip(lang: string, key: string): Promise<AudioBuffer | null> {
+    const id = `${lang}/${key.replace('pa.', '')}`;
+    let p = this.paClips.get(id);
+    if (!p) {
+      p = fetch(assetUrl(`audio/pa/${id}.mp3`))
+        .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(String(r.status)))))
+        .then((b) => this.ctx!.decodeAudioData(b))
+        .catch(() => null);
+      this.paClips.set(id, p);
+    }
+    return p;
+  }
+
+  private playPa(buf: AudioBuffer) {
+    if (!this.ctx || this.muted) return;
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    const g = this.ctx.createGain();
+    g.gain.value = 0.55 + this.vol.sfx * 0.45;
+    src.connect(g).connect(this.master);
+    // the music dips while the PA talks
+    this.duck = 0.3;
+    this.apply();
+    src.onended = () => {
+      this.duck = 1;
+      this.apply();
+    };
+    src.start();
   }
 
   /** Voices load asynchronously (often empty on the first call). */
@@ -347,6 +395,50 @@ export class Sfx {
     const jitter = 0.8 + Math.random() * 0.4;
     this.rattle.gain.gain.setTargetAtTime(speed01 > 0.03 ? (0.015 + speed01 * 0.05) * jitter : 0, t, 0.05);
     this.rattle.filter.frequency.setTargetAtTime(1500 + speed01 * 1200, t, 0.1);
+  }
+
+  /** Tyre squeal + scrape while drifting (0 = off, 1 = full slide). */
+  setSkid(level: number) {
+    if (!this.ctx) return;
+    if (!this.skid) {
+      const src = this.ctx.createBufferSource();
+      src.buffer = this.noiseBuf;
+      src.loop = true;
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.value = 2400;
+      filter.Q.value = 3;
+      const gain = this.ctx.createGain();
+      gain.gain.value = 0;
+      src.connect(filter).connect(gain).connect(this.sfxBus);
+      src.start();
+      const squeal = this.ctx.createOscillator();
+      squeal.type = 'triangle';
+      squeal.frequency.value = 900;
+      const squealGain = this.ctx.createGain();
+      squealGain.gain.value = 0;
+      squeal.connect(squealGain).connect(this.sfxBus);
+      squeal.start();
+      this.skid = { gain, filter, squeal, squealGain };
+    }
+    const t = this.ctx.currentTime;
+    this.skid.gain.gain.setTargetAtTime(level * 0.09, t, 0.04);
+    this.skid.filter.frequency.setTargetAtTime(2000 + level * 1400, t, 0.08);
+    this.skid.squealGain.gain.setTargetAtTime(level * 0.018, t, 0.05);
+    this.skid.squeal.frequency.setTargetAtTime(820 + level * 260 + Math.random() * 60, t, 0.05);
+  }
+
+  /** Drift boost: whoosh + rising zap (bigger for a super boost). */
+  boost(level: number) {
+    this.noise(0.5, 0.35, 900, 0.7);
+    this.noise(0.4, 0.25, 3000, 1.2, 0.05);
+    this.tone(320, 0.35, 'sawtooth', 0.08, 0, level > 1 ? 1400 : 900);
+    if (level > 1) this.tone(660, 0.3, 'square', 0.05, 0.08, 1800);
+  }
+
+  /** Drift charge reached a new level. */
+  driftLevel(level: number) {
+    this.tone(level > 1 ? 1568 : 1175, 0.12, 'square', 0.06);
   }
 
   /** Scooter engine (0 = off). */

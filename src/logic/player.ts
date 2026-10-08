@@ -21,6 +21,8 @@ export interface MoveInput {
   strafe: number; // -1..1 (positive = right)
   turn: number; // keyboard turn, rad/s scale -1..1 (positive = left)
   sprint: boolean;
+  /** Handbrake: the cart keeps its momentum and slides sideways. */
+  drift?: boolean;
 }
 
 export const PLAYER = {
@@ -33,6 +35,10 @@ export const PLAYER = {
   accel: 10,
   friction: 9,
   keyTurn: 2.2,
+  /** Sideways grip while drifting (lower = longer slides). */
+  driftGrip: 1.0,
+  /** Speed needed before a drift kicks in. */
+  driftMinSpeed: 1.6,
   eyeHeight: 1.62,
   minPitch: -1.25,
   maxPitch: 0.9,
@@ -102,8 +108,20 @@ export function stepPlayer(p: PlayerState, input: MoveInput, dt: number, collide
   tz *= top;
   const rate = len > 0.01 ? PLAYER.accel : PLAYER.friction;
   const k = 1 - Math.exp(-rate * dt);
-  p.vx += (tx - p.vx) * k;
-  p.vz += (tz - p.vz) * k;
+  if (input.drift && Math.hypot(p.vx, p.vz) > PLAYER.driftMinSpeed) {
+    // split velocity into along-heading and sideways parts: turning keeps the old
+    // momentum, so it shows up as a slow-decaying sideways slide
+    const vf = p.vx * fx + p.vz * fz;
+    const vl = p.vx * rx + p.vz * rz;
+    const tf = tx * fx + tz * fz;
+    const nf = vf + (tf - vf) * (1 - Math.exp(-PLAYER.accel * 0.45 * dt));
+    const nl = vl * Math.exp(-PLAYER.driftGrip * dt);
+    p.vx = fx * nf + rx * nl;
+    p.vz = fz * nf + rz * nl;
+  } else {
+    p.vx += (tx - p.vx) * k;
+    p.vz += (tz - p.vz) * k;
+  }
 
   const ox = p.x;
   const oz = p.z;
@@ -134,6 +152,11 @@ export function stepPlayer(p: PlayerState, input: MoveInput, dt: number, collide
   }
   p.stride += Math.hypot(p.x - ox, p.z - oz);
   return hit;
+}
+
+/** Sideways slide speed (m/s) relative to where the player faces. */
+export function lateralSpeed(p: PlayerState): number {
+  return p.vx * -Math.cos(p.yaw) + p.vz * Math.sin(p.yaw);
 }
 
 export function speedOf(p: PlayerState): number {

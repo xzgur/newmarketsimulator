@@ -4,9 +4,10 @@
  *   npm run dev                 # in another terminal
  *   npm run playtest [-- url]   # default http://localhost:5173/?q=low
  *
- * Plays day 1 from the main menu: delivers order 1, lets order 2 time out,
- * reaches the end of the day, buys an upgrade, then checks a three-bag order
- * on day 6. Everything goes through the real input layer: keyboard walking,
+ * Plays day 1 from the main menu: delivers order 1 (review pops up, the day
+ * keeps going), lets order 2 time out, drifts for a boost, runs the clock to
+ * closing time, buys upgrades, then checks a three-bag order on day 6.
+ * Everything goes through the real input layer: keyboard walking,
  * mouse drag-look, left click to pick / bag, right click to put back, F to
  * close the order, E to hand it to the courier. The debug hook
  * (window.__game) is only used to walk up to shelves / aim at items and to
@@ -73,7 +74,8 @@ try {
   await page.click('[data-act=play]');
   await advance(0.4);
   const lv = await g(() => window.__game.level);
-  assert(lv.day === 1 && lv.index === 0 && lv.total === 3, `day 1 starts with order 1/3 (${JSON.stringify(lv)})`);
+  const day1 = await g(() => window.__game.day);
+  assert(lv.day === 1 && lv.index === 0 && day1.goal === 2 && day1.length === 300, `day 1 starts: first order, goal 2, 5 min (${JSON.stringify(day1)})`);
   assert((await g(() => window.__game.phase)) === 'incoming', 'phone rings with an incoming order');
   await shot('incoming-order');
   await page.keyboard.press('Enter');
@@ -175,36 +177,64 @@ try {
   await page.keyboard.press('e');
   await advance(0.1);
   assert((await g(() => window.__game.phase)) === 'handover', 'E hands the bags to the courier');
-  for (let i = 0; i < 30 && (await g(() => window.__game.phase)) !== 'won'; i++) await advance(0.5);
-  assert((await g(() => window.__game.screen)) === 'review', 'delivered: the customer review appears');
+  for (let i = 0; i < 60 && (await g(() => window.__game.day)).results < 1; i++) await advance(0.2);
+  assert((await g(() => window.__game.phase)) === 'waiting', 'delivered: play goes on (no blocking screen)');
+  assert(await page.isVisible('.review-toast'), 'the customer review pops up as a notification');
   const c1 = await g(() => window.__game.career);
   assert(c1.cash > 0 && c1.delivered === 1, `order paid ($${c1.cash})`);
-  await page.waitForTimeout(900);
-  await shot('review');
+  await advance(0.3);
+  await shot('review-toast');
+  await advance(5);
+  const lv2 = await g(() => window.__game.level);
+  assert(lv2.index === 1 && (await g(() => window.__game.phase)) === 'incoming', 'a few seconds later the next order rings');
 
   console.log('Order 2 times out');
-  await page.keyboard.press('Enter');
-  await advance(0.3);
-  assert((await g(() => window.__game.level)).index === 1, 'Enter on the review starts order 2');
   await page.keyboard.press('Enter');
   await advance(0.2);
   const left = await g(() => window.__game.timeLeft);
   await advance(left - 7);
   await shot('low-time');
   await advance(8);
-  assert((await g(() => window.__game.screen)) === 'review', 'time out shows the cancelled review');
-  await page.waitForTimeout(600);
-  await shot('review-cancelled');
+  assert((await g(() => window.__game.phase)) === 'waiting', 'time out: order cancelled, the day continues');
+  assert(await page.isVisible('.review-toast.bad'), 'angry review notification');
 
-  console.log('End of day');
-  await g(() => window.__game.next());
-  await page.keyboard.press('Enter');
-  await advance(0.2);
-  await advance((await g(() => window.__game.timeLeft)) + 1);
-  await g(() => window.__game.next());
-  await advance(0.1);
-  assert((await g(() => window.__game.screen)) === 'dayEnd', 'last order leads to the end-of-day screen');
-  assert((await g(() => window.__game.career)).day === 1, 'goal missed: day 1 again');
+  console.log('Drift');
+  await g(() => window.__game.teleport(0, 12, Math.PI, -0.1));
+  await page.keyboard.down('w');
+  await page.keyboard.down('Shift');
+  await advance(0.5);
+  await page.keyboard.down('Space');
+  let maxLevel = 0;
+  // one sharp turn while sliding, then hold the slide
+  for (let i = 0; i < 24; i++) {
+    const mx = i < 8 ? 45 : 0;
+    await g((mx) => window.dispatchEvent(new MouseEvent('mousemove', { movementX: mx, movementY: 0 })), mx);
+    await advance(0.05);
+    maxLevel = Math.max(maxLevel, (await g(() => window.__game.drift)).level);
+    if (maxLevel >= 1) {
+      await shot('drift');
+      break;
+    }
+  }
+  assert(maxLevel >= 1, `holding Space while turning charges a drift (level ${maxLevel})`);
+  await page.keyboard.up('Space');
+  await advance(0.05);
+  assert((await g(() => window.__game.drift)).boost > 0, 'releasing the drift fires a boost');
+  await page.keyboard.up('Shift');
+  await page.keyboard.up('w');
+  await advance(1);
+
+  console.log('Closing time');
+  const plan1 = await g(() => window.__game.day);
+  await g((t) => window.__game.setDayTime(t), plan1.length - 40);
+  await advance(1);
+  await shot('sunset');
+  await g((t) => window.__game.setDayTime(t), plan1.length + 1);
+  await advance(0.3);
+  // an order may still be ringing / in progress: let it run out
+  for (let i = 0; i < 40 && (await g(() => window.__game.screen)) !== 'dayEnd'; i++) await advance(10);
+  assert((await g(() => window.__game.screen)) === 'dayEnd', 'closing time ends the day');
+  assert((await g(() => window.__game.career)).day === 1, 'goal missed (1/2): day 1 again');
   await page.waitForTimeout(500);
   await shot('day-end');
 
@@ -226,10 +256,10 @@ try {
   await page.keyboard.press('Enter');
   await advance(0.2);
   let found = false;
-  for (let i = 0; i < 6 && !found; i++) {
+  for (let i = 0; i < 12 && !found; i++) {
     if ((await g(() => window.__game.session)).bags.length === 3) found = true;
     else {
-      await g((n) => window.__game.startOrder(n), i + 1);
+      await g(() => window.__game.skipOrder());
       await advance(0.1);
       await page.keyboard.press('Enter');
       await advance(0.2);
@@ -250,7 +280,7 @@ try {
   await page.click('[data-act=restart]');
   await advance(0.2);
   const s = await g(() => ({ phase: window.__game.phase, tray: window.__game.session.tray.length, bagged: window.__game.session.bags.reduce((a, b) => a + b.items.length, 0) }));
-  assert(s.phase === 'incoming' && s.tray === 0 && s.bagged === 0, 'restart resets the order');
+  assert(s.phase === 'incoming' && s.tray === 0 && s.bagged === 0 && (await g(() => window.__game.day)).t < 1, 'restart starts the day over');
 
   assert(errors.length === 0, `no page errors${errors.length ? ': ' + errors.join(' | ') : ''}`);
   console.log('\nPLAYTEST PASSED');

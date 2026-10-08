@@ -1,5 +1,4 @@
 /** Order types. Orders themselves are generated per day by logic/career.ts. */
-import type { MoodId } from '../render/moodIds';
 
 export interface OrderLine {
   productId: string;
@@ -36,10 +35,6 @@ export interface LevelDef {
   day: number;
   /** 0-based position in the day. */
   index: number;
-  /** Orders in the day. */
-  total: number;
-  mood: MoodId;
-  shoppers: number;
   tutorial: boolean;
   /** Express: less time, bigger pay and tip. */
   express: boolean;

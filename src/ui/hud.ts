@@ -47,8 +47,8 @@ export function sectionLabel(pid: string): string {
   return s.aisle > 0 ? `${t('aisle', { n: s.aisle })} · ${sectionName(s.id)}` : sectionName(s.id);
 }
 
-type PhoneScreen = 'idle' | 'incoming' | 'picking' | 'courier' | 'delivered' | 'failed';
-type Screen = 'loading' | 'menu' | 'shop' | 'settings' | 'howto' | 'pause' | 'review' | 'dayEnd';
+type PhoneScreen = 'idle' | 'waiting' | 'incoming' | 'picking' | 'courier' | 'delivered' | 'failed';
+type Screen = 'loading' | 'menu' | 'shop' | 'settings' | 'howto' | 'pause' | 'dayEnd';
 
 export class Hud {
   readonly root: HTMLDivElement;
@@ -69,6 +69,12 @@ export class Hud {
   private dayPill: HTMLDivElement;
   private radar: HTMLDivElement;
   private urgency: HTMLDivElement;
+  private reviews: HTMLDivElement;
+  private drift: HTMLDivElement;
+  /** Seconds until the next order rings (phone 'waiting' screen); < 0 = store closed. */
+  nextOrderIn = 0;
+  private dayDelivered = 0;
+  private dayGoal = 0;
   private screens = new Map<Screen, HTMLDivElement>();
   private current: Screen | null = null;
   private returnTo: Screen = 'menu';
@@ -102,6 +108,8 @@ export class Hud {
     this.dayPill = h('div', 'day-pill hidden');
     this.radar = h('div', 'radar hidden', '<i>➤</i><span></span>');
     this.urgency = h('div', 'urgency');
+    this.reviews = h('div', 'review-toasts');
+    this.drift = h('div', 'drift hidden', '<span></span><div class="dm"><i></i></div>');
     this.phone = h('div', 'phone hidden');
     const bezel = h('div', 'phone-bezel');
     const status = h('div', 'phone-status');
@@ -116,8 +124,8 @@ export class Hud {
       else if (el.closest('[data-act=complete]')) this.cb.complete();
       else if (el.closest('[data-act=toggle]')) this.cb.togglePhone();
     });
-    this.root.append(this.urgency, this.dayPill, this.radar, this.crosshair, this.hoverCard, this.heldCard, this.bagBar, this.timer, this.objective, this.toasts, this.popups, this.hint, this.pa, this.banner, this.phone);
-    for (const s of ['loading', 'menu', 'shop', 'settings', 'howto', 'pause', 'review', 'dayEnd'] as Screen[]) {
+    this.root.append(this.urgency, this.dayPill, this.radar, this.drift, this.reviews, this.crosshair, this.hoverCard, this.heldCard, this.bagBar, this.timer, this.objective, this.toasts, this.popups, this.hint, this.pa, this.banner, this.phone);
+    for (const s of ['loading', 'menu', 'shop', 'settings', 'howto', 'pause', 'dayEnd'] as Screen[]) {
       const el = h('div', `screen screen-${s} hidden`);
       el.addEventListener('click', (e) => this.onScreenClick(s, e));
       el.addEventListener('input', (e) => this.onSettingInput(e));
@@ -267,7 +275,7 @@ export class Hud {
     this.screens.get('howto')!.innerHTML = `
       <div class="panel">
         <div class="panel-head"><h2>${esc(t('menu.howto'))}</h2><button class="btn small" data-act="back">← ${esc(t('menu.back'))}</button></div>
-        <ol class="howto">${[1, 2, 3, 4, 5, 6, 7].map((i) => `<li><span class="step">${i}</span><p>${t(`how.${i}`)}</p></li>`).join('')}</ol>
+        <ol class="howto">${[1, 2, 3, 4, 5, 6, 7, 8].map((i) => `<li><span class="step">${i}</span><p>${t(`how.${i}`)}</p></li>`).join('')}</ol>
         <div class="howto-keys">${t('how.controls')}</div>
       </div>`;
   }
@@ -286,43 +294,36 @@ export class Hud {
       </div>`;
   }
 
-  showReview(level: LevelDef, r: OrderResult, results: OrderResult[], promoted: RankDef | null = null) {
+  /** Customer review as a phone-style notification: play never stops. */
+  reviewToast(level: LevelDef, r: OrderResult) {
     const o = level.order;
-    const last = level.index + 1 >= level.total;
-    const dots = Array.from({ length: level.total }, (_, i) => {
-      const x = results[i];
-      return `<i class="${x ? (x.delivered ? 'ok' : 'bad') : i === level.index ? 'cur' : ''}">${x ? (x.delivered ? '✓' : '✕') : i + 1}</i>`;
-    }).join('');
-    const row = (label: string, v: number, cls = '') => `<div class="pay-row ${cls}"><span>${esc(label)}</span><b>${money(v)}</b></div>`;
-    this.screens.get('review')!.innerHTML = `
-      <div class="panel narrow center result">
-        <div class="badge ${r.delivered ? 'good' : 'bad'}">${esc(t(r.delivered ? 'rev.delivered' : 'rev.cancelled'))}${level.express ? ' · ⚡' : ''}</div>
-        <h2>${esc(t('rev.title', { id: o.id, name: o.customer }))}</h2>
-        <div class="review-card">
-          <div class="rc-head"><span class="avatar">${['🙂', '😀', '🤓', '😎', '🥳', '🧑‍🍳'][o.customer.length % 6]}</span><b>${esc(o.customer)}</b>${this.stars(r.stars)}</div>
-          <p>“${esc(pick(r.delivered ? `rev.${r.stars}` : 'rev.fail'))}”</p>
-        </div>
-        ${
-          r.delivered
-            ? `<div class="pay">${row(t('rev.pay'), r.pay)}${row(t('rev.speed'), r.speedBonus)}${row(t('rev.tip'), r.tip, 'tip')}${row(t('rev.total'), r.total, 'total')}</div>`
-            : `<p>${esc(t('end.lateNotPacked'))}</p>`
-        }
-        ${
-          promoted
-            ? `<div class="promo" style="--p:${promoted.paint}"><b>🎉 ${esc(t('rev.promoted', { rank: t(`rank.${promoted.id}`) }))}</b><span>${esc(t('rev.bonus', { c: money(promoted.bonus) }))}</span></div>`
-            : ''
-        }
-        ${this.rankCard(r.delivered ? r.stars : 0)}
-        <div class="day-dots">${dots}</div>
-        <div class="btn-row">
-          <button class="btn primary" data-act="next">${esc(t(last ? 'rev.endDay' : 'rev.next'))} → <kbd>Enter</kbd></button>
-        </div>
-      </div>`;
+    const el = h(
+      'div',
+      `review-toast ${r.delivered ? '' : 'bad'}`,
+      `<div class="rt-head"><span class="avatar">${['🙂', '😀', '🤓', '😎', '🥳', '🧑‍🍳'][o.customer.length % 6]}</span>
+        <div><b>${esc(o.customer)}</b><small>${esc(t(r.delivered ? 'rev.delivered' : 'rev.cancelled'))} · ${esc(o.id)}${level.express ? ' · ⚡' : ''}</small></div>
+        ${this.stars(r.stars)}</div>
+      <p>“${esc(pick(r.delivered ? `rev.${r.stars}` : 'rev.fail'))}”</p>
+      ${r.delivered ? `<div class="rt-pay"><span>${esc(t('rev.pay'))} ${money(r.pay)} · ${esc(t('rev.speed'))} ${money(r.speedBonus)} · ${esc(t('rev.tip'))} ${money(r.tip)}</span><b>+${money(r.total)}</b></div>` : ''}`,
+    );
+    this.reviews.appendChild(el);
+    while (this.reviews.children.length > 2) this.reviews.firstChild?.remove();
+    setTimeout(() => el.classList.add('out'), 6500);
+    setTimeout(() => el.remove(), 7000);
+  }
+
+  /** Big centre banner: rank-up. */
+  promotion(rank: RankDef) {
+    this.showBanner(
+      `<div class="sb-num">🎉 ${esc(t('rev.promoted', { rank: t(`rank.${rank.id}`) }))}</div><div class="sb-title" style="color:${rank.paint}">${esc(t(`rank.${rank.id}`))}</div><div class="sb-rule">${esc(t('rev.bonus', { c: money(rank.bonus) }))}</div>`,
+      4200,
+    );
   }
 
   showDayEnd(plan: DayPlan, results: OrderResult[], passed: boolean) {
     const delivered = results.filter((r) => r.delivered).length;
     const earned = results.reduce((a, r) => a + r.total, 0);
+    const dots = results.map((x) => `<i class="${x.delivered ? 'ok' : 'bad'}">${x.delivered ? '✓' : '✕'}</i>`).join('');
     const avg = results.length ? results.reduce((a, r) => a + r.stars, 0) / results.length : 0;
     const nextDay = this.career.day;
     this.screens.get('dayEnd')!.innerHTML = `
@@ -331,10 +332,11 @@ export class Hud {
         <h2>${esc(t(passed ? 'dayEnd.passed' : 'dayEnd.failed', { n: plan.day }))}</h2>
         <p>${esc(t(passed ? 'dayEnd.passText' : 'dayEnd.failText'))}</p>
         <div class="stats">
-          <div><b>${delivered}/${plan.orders.length}</b><span>${esc(t('dayEnd.delivered'))} · ${esc(t('day.goal', { g: plan.goal, n: plan.orders.length }).split(':')[0])} ${plan.goal}</span></div>
+          <div><b>${delivered}/${plan.goal}</b><span>${esc(t('dayEnd.delivered'))}</span></div>
           <div><b>${money(earned)}</b><span>${esc(t('dayEnd.earned'))}</span></div>
           <div><b>★ ${avg.toFixed(1)}</b><span>${esc(t('dayEnd.rating'))}</span></div>
         </div>
+        ${dots ? `<div class="day-dots">${dots}</div>` : ''}
         ${this.rankCard()}
         <div class="btn-row">
           <button class="btn primary" data-act="next">▶ ${esc(t(passed ? 'dayEnd.next' : 'dayEnd.retry', { n: nextDay }))}</button>
@@ -436,6 +438,7 @@ export class Hud {
     for (const el of [this.timer, this.phone, this.objective, this.crosshair, this.dayPill]) el.classList.toggle('hidden', !on);
     if (!on) {
       this.radar.classList.add('hidden');
+      this.drift.classList.add('hidden');
       this.setUrgency(0);
       this.bagBar.classList.add('hidden');
       this.heldCard.classList.add('hidden');
@@ -449,25 +452,40 @@ export class Hud {
     this.hint.classList.toggle('hidden', !on);
   }
 
-  /** Big banner at the start of a day / an order. */
-  orderBanner(level: LevelDef, goal: number, newRule: string | null) {
-    const first = level.index === 0;
-    this.banner.innerHTML = first
-      ? `<div class="sb-num">${esc(t('day.goal', { g: goal, n: level.total }))}</div><div class="sb-title">${esc(t('day.title', { n: level.day }))}</div>${newRule ? `<div class="sb-rule">✨ ${esc(t('day.newRule'))}: ${esc(newRule)}</div>` : ''}`
-      : `<div class="sb-num">${esc(t('day.title', { n: level.day }))}</div><div class="sb-title">${esc(t('order.banner', { i: level.index + 1, n: level.total }))}</div>${level.express ? `<div class="sb-rule">${esc(t('order.express'))}</div>` : ''}`;
+  private showBanner(html: string, ms = 3600) {
+    this.banner.innerHTML = html;
     this.banner.classList.remove('hidden');
     this.banner.classList.remove('out');
     clearTimeout((this.banner as unknown as { _a?: number })._a);
     clearTimeout((this.banner as unknown as { _b?: number })._b);
-    (this.banner as unknown as { _a?: number })._a = window.setTimeout(() => this.banner.classList.add('out'), 3600);
-    (this.banner as unknown as { _b?: number })._b = window.setTimeout(() => this.banner.classList.add('hidden'), 4200);
-    this.dayPill.innerHTML = `<b>${esc(t('hud.day', { d: level.day }))}</b><span>${esc(t('hud.orderOf', { i: level.index + 1, n: level.total }))}</span>${level.express ? `<em>⚡ ${esc(t('hud.express'))}</em>` : ''}<span class="dp-cash">💵 ${money(this.career.cash)}</span>`;
+    (this.banner as unknown as { _a?: number })._a = window.setTimeout(() => this.banner.classList.add('out'), ms);
+    (this.banner as unknown as { _b?: number })._b = window.setTimeout(() => this.banner.classList.add('hidden'), ms + 600);
   }
 
-  setCash(text: string) {
-    const el = this.dayPill.querySelector('.dp-cash');
-    const html = `💵 ${text}`;
-    if (el && el.textContent !== html) el.textContent = html;
+  /** Opening banner of a work day. */
+  dayBanner(plan: DayPlan, newRule: string | null) {
+    this.showBanner(
+      `<div class="sb-num">${esc(t('day.goal', { g: plan.goal }))}</div><div class="sb-title">${esc(t('day.title', { n: plan.day }))}</div>${newRule ? `<div class="sb-rule">✨ ${esc(t('day.newRule'))}: ${esc(newRule)}</div>` : ''}`,
+    );
+  }
+
+  /** Day pill (top left): day, in-game clock, deliveries vs goal, cash. */
+  setDayInfo(day: number, clock: string, delivered: number, goal: number, closed: boolean, cash: string) {
+    this.dayDelivered = delivered;
+    this.dayGoal = goal;
+    const html = `<b>${esc(t('hud.day', { d: day }))}</b><span class="dp-clock ${closed ? 'closed' : ''}">🕑 ${clock}</span><span class="dp-goal ${delivered >= goal ? 'done' : ''}">📦 ${delivered}/${goal}</span><span class="dp-cash">💵 ${cash}</span>`;
+    if (this.dayPill.innerHTML !== html) this.dayPill.innerHTML = html;
+  }
+
+  /** Drift charge meter under the crosshair (level 0 = charging, 1 = boost, 2 = super boost). */
+  setDrift(active: boolean, charge01: number, level: number) {
+    this.drift.classList.toggle('hidden', !active);
+    if (!active) return;
+    this.drift.className = `drift lv${level}`;
+    (this.drift.querySelector('i') as HTMLElement).style.width = `${Math.round(charge01 * 100)}%`;
+    const label = level >= 2 ? t('hud.driftSuper') : level >= 1 ? t('hud.driftBoost') : t('hud.drift');
+    const span = this.drift.querySelector('span') as HTMLElement;
+    if (span.textContent !== label) span.textContent = label;
   }
 
   /** Arrow towards the next item (Shelf Radar upgrade). angle: 0 = straight ahead, + = right. */
@@ -485,7 +503,8 @@ export class Hud {
     this.timer.classList.toggle('shake', u > 0.6);
   }
 
-  setTimer(seconds: number, running: boolean) {
+  setTimer(seconds: number, running: boolean, visible = true) {
+    this.timer.classList.toggle('off', !visible);
     const html = `<span class="t-label">${t('hud.time')}</span><span class="t-val">${formatTime(seconds)}</span>`;
     if (this.timer.innerHTML !== html) this.timer.innerHTML = html;
     this.timer.classList.toggle('warn', seconds <= 60 && seconds > 30);
@@ -551,7 +570,7 @@ export class Hud {
     this.screen = s;
     this.sig = '';
     this.phone.classList.toggle('ringing', s === 'incoming');
-    if (s === 'incoming' || s === 'courier' || s === 'delivered') this.setPhoneOpen(true);
+    if (s === 'incoming' || s === 'courier' || s === 'delivered' || s === 'waiting') this.setPhoneOpen(true);
   }
 
   setPhoneOpen(open: boolean) {
@@ -565,7 +584,7 @@ export class Hud {
   }
 
   updatePhone(session: OrderSession, heldPid: string | null) {
-    const sig = JSON.stringify([this.screen, this.phoneOpen, session.progress(), session.bags, heldPid, Math.ceil(this.courierEta), Object.keys(this.thumbs).length, this.order.id]);
+    const sig = JSON.stringify([this.screen, this.phoneOpen, Math.ceil(this.nextOrderIn), this.dayDelivered, session.progress(), session.bags, heldPid, Math.ceil(this.courierEta), Object.keys(this.thumbs).length, this.order.id]);
     if (sig === this.sig) return;
     this.sig = sig;
     const o = this.order;
@@ -632,6 +651,17 @@ export class Hud {
           </div>
           <div class="courier-card"><div class="avatar">🧑</div><div><b>${esc(o.courier)}</b><span>${esc(eta > 0 ? t('app.toStore', { n: eta }) : t('app.atDoor'))}</span></div></div>
           <div class="courier-tip">${eta > 0 ? t('app.tipGo') : t('app.tipGive')}</div>`;
+        break;
+      }
+      case 'waiting': {
+        const closed = this.nextOrderIn < 0;
+        html = `${head(esc(t(closed ? 'app.closedPill' : 'app.online')), closed ? 'red' : 'green')}
+          <div class="delivered">
+            <div class="${closed ? 'big-check red' : 'radar-ping'}">${closed ? '🌙' : '📡'}</div>
+            <b>${esc(t(closed ? 'app.storeClosed' : 'app.finding'))}</b>
+            <span>${esc(closed ? t('app.closedText') : t('app.nextIn', { n: Math.max(1, Math.ceil(this.nextOrderIn)) }))}</span>
+            <span class="day-progress">📦 ${esc(t('app.todayGoal', { d: this.dayDelivered, g: this.dayGoal }))}</span>
+          </div>`;
         break;
       }
       case 'delivered':

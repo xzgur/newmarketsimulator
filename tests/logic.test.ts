@@ -30,7 +30,7 @@ const DEMO_ORDER: OrderDef = {
 import { getProduct, PRODUCT_BY_ID } from '../src/data/products';
 import { buildLayout, navPath } from '../src/data/layout';
 import { resolveCircle, circleIntersectsBox } from '../src/logic/collision';
-import { cartCenter, createPlayer, look, PLAYER, speedOf, stepPlayer } from '../src/logic/player';
+import { cartCenter, createPlayer, lateralSpeed, look, PLAYER, speedOf, stepPlayer } from '../src/logic/player';
 import { GameFlow, formatTime } from '../src/logic/gameFlow';
 
 const small: OrderDef = {
@@ -301,7 +301,7 @@ describe('GameFlow', () => {
 });
 
 import { missingKeys, PRODUCT_NAMES, SECTION_NAMES } from '../src/i18n';
-import { applyResult, buyUpgrade, finishDay, newCareer, ordersInDay, packOrder, planDay, rankIndex, rankProgress, RANKS, scoreOrder, type Career } from '../src/logic/career';
+import { applyResult, buyUpgrade, dayGoal, dayLength, finishDay, makeOrder, newCareer, packOrder, planDay, rankIndex, rankProgress, RANKS, scoreOrder, type Career } from '../src/logic/career';
 
 describe('career', () => {
   const layout = buildLayout();
@@ -311,10 +311,10 @@ describe('career', () => {
     for (const bags of [0, 2]) {
       const c: Career = { ...newCareer(), upgrades: { bags } };
       for (let day = 1; day <= 30; day++) {
-        const plan = planDay(day, c);
-        expect(plan.orders.length).toBe(ordersInDay(day));
-        expect(plan.goal).toBeLessThanOrEqual(plan.orders.length);
-        for (const lv of plan.orders) {
+        const plan = planDay(day);
+        expect(plan.goal).toBe(dayGoal(day));
+        for (let i = 0; i < 8; i++) {
+          const lv = makeOrder(day, i, c);
           const o = lv.order;
           expect(o.bagCount).toBeGreaterThanOrEqual(1);
           expect(o.bagCount).toBeLessThanOrEqual(3);
@@ -334,19 +334,31 @@ describe('career', () => {
     }
   });
 
-  it('days get harder: more items, rules switch on, the same day replays identically', () => {
+  it('days get harder step by step: bigger orders, rules, tighter clocks, express orders', () => {
     const c = newCareer();
-    const items = (d: number) => planDay(d, c).orders.reduce((a, o) => a + o.order.lines.reduce((x, l) => x + l.qty, 0), 0);
+    const items = (d: number, i = 0) => makeOrder(d, i, c).order.lines.reduce((x, l) => x + l.qty, 0);
+    const perItem = (d: number, i = 0) => makeOrder(d, i, c).order.timeLimit / items(d, i);
     expect(items(6)).toBeGreaterThan(items(1));
-    expect(planDay(1, c).orders[0].order.rules).toEqual({ chemical: false, fragile: false });
-    expect(planDay(3, c).orders[0].order.rules).toEqual({ chemical: true, fragile: true });
-    expect(planDay(4, c).orders.filter((o) => o.express).length).toBe(1);
-    expect(JSON.stringify(planDay(5, c))).toBe(JSON.stringify(planDay(5, c)));
+    expect(items(2, 5)).toBeGreaterThan(items(2, 0));
+    expect(perItem(10)).toBeLessThan(perItem(2));
+    expect(makeOrder(1, 0, c).order.rules).toEqual({ chemical: false, fragile: false });
+    expect(makeOrder(3, 0, c).order.rules).toEqual({ chemical: true, fragile: true });
+    const express = Array.from({ length: 40 }, (_, i) => makeOrder(5, i, c).express).filter(Boolean).length;
+    expect(express).toBeGreaterThan(2);
+    expect(express).toBeLessThan(20);
+    expect(Array.from({ length: 20 }, (_, i) => makeOrder(2, i, c).express).some(Boolean)).toBe(false);
+    expect(JSON.stringify(makeOrder(5, 3, c))).toBe(JSON.stringify(makeOrder(5, 3, c)));
+    // longer days, higher (but bounded) goals
+    expect(dayLength(1)).toBe(300);
+    expect(dayLength(30)).toBe(480);
+    expect(dayGoal(1)).toBe(2);
+    expect(dayGoal(30)).toBe(5);
+    for (let d = 1; d < 30; d++) expect(dayGoal(d + 1)).toBeGreaterThanOrEqual(dayGoal(d));
   });
 
   it('pays more for faster, cleaner deliveries and nothing for cancelled ones', () => {
     const c = newCareer();
-    const lv = planDay(2, c).orders[0];
+    const lv = makeOrder(2, 0, c);
     const fast = scoreOrder(lv, c, true, lv.order.timeLimit * 0.6, 0);
     const slow = scoreOrder(lv, c, true, lv.order.timeLimit * 0.04, 0);
     const sloppy = scoreOrder(lv, c, true, lv.order.timeLimit * 0.6, 4);
@@ -368,8 +380,8 @@ describe('career', () => {
     c = { ...c, cash: 1000 };
     c = buyUpgrade(buyUpgrade(c, 'radar')!, 'courier')!;
     expect(buyUpgrade(c, 'radar')).toBeNull();
-    const plan = planDay(1, c);
-    const r = scoreOrder(plan.orders[0], c, true, 100, 0);
+    const plan = planDay(1);
+    const r = scoreOrder(makeOrder(1, 0, c), c, true, 100, 0);
     c = applyResult(c, r).career;
     expect(c.delivered).toBe(1);
     expect(finishDay(c, plan, plan.goal - 1)).toMatchObject({ passed: false, career: { day: 1 } });
@@ -377,10 +389,34 @@ describe('career', () => {
   });
 });
 
+describe('drift', () => {
+  it('holding drift keeps the sideways momentum after a sharp turn (a slide)', () => {
+    const mk = () => {
+      const p = createPlayer(0, 0, 0);
+      p.vz = 5;
+      p.yaw = Math.PI / 2; // snapped 90° to the side with the mouse
+      return p;
+    };
+    const grip = mk();
+    const slide = mk();
+    stepPlayer(grip, { forward: 1, strafe: 0, turn: 0, sprint: false }, 0.1, []);
+    stepPlayer(slide, { forward: 1, strafe: 0, turn: 0, sprint: false, drift: true }, 0.1, []);
+    expect(Math.abs(lateralSpeed(slide))).toBeGreaterThan(Math.abs(lateralSpeed(grip)) * 2);
+    // too slow: no drift, normal grip
+    const slow = createPlayer(0, 0, Math.PI / 2);
+    slow.vz = 1;
+    const slowGrip = createPlayer(0, 0, Math.PI / 2);
+    slowGrip.vz = 1;
+    stepPlayer(slow, { forward: 1, strafe: 0, turn: 0, sprint: false, drift: true }, 0.1, []);
+    stepPlayer(slowGrip, { forward: 1, strafe: 0, turn: 0, sprint: false }, 0.1, []);
+    expect(lateralSpeed(slow)).toBeCloseTo(lateralSpeed(slowGrip), 5);
+  });
+});
+
 describe('ranks', () => {
   it('review stars climb the ladder and each promotion pays its bonus once', () => {
     const c = newCareer();
-    const lv = planDay(1, c).orders[0];
+    const lv = makeOrder(1, 0, c);
     const five = scoreOrder(lv, c, true, lv.order.timeLimit, 0);
     expect(five.stars).toBe(5);
     let cur: Career = { ...c, stars: 10 };

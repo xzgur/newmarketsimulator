@@ -6,7 +6,6 @@
 import { PRODUCTS, getProduct, type ProductDef } from '../data/products';
 import { buildLayout } from '../data/layout';
 import type { BagRules, LevelDef, OrderDef } from '../data/order';
-import type { MoodId } from '../render/moodIds';
 import { bagConflict } from './order';
 
 // ---------------------------------------------------------------- upgrades
@@ -124,12 +123,14 @@ function stockedProducts(): ProductDef[] {
   return PRODUCTS.filter((p) => displayed!.has(p.id));
 }
 
-export function ordersInDay(day: number): number {
-  return Math.min(6, 2 + Math.ceil(day / 2));
+/** Real seconds the store is open on a day (08:00 → 20:00 on the in-game clock). */
+export function dayLength(day: number): number {
+  return Math.min(480, 300 + (day - 1) * 30);
 }
 
+/** Deliveries needed before closing time. */
 export function dayGoal(day: number): number {
-  return ordersInDay(day) - 1;
+  return Math.min(5, 2 + Math.floor((day - 1) / 3));
 }
 
 export function rulesForDay(day: number): BagRules {
@@ -163,31 +164,28 @@ export function packOrder(order: Pick<OrderDef, 'lines' | 'bagCount' | 'bagCapac
   return go(0) ? out : null;
 }
 
-function moodFor(index: number, total: number): MoodId {
-  const k = total <= 1 ? 0 : index / (total - 1);
-  if (total >= 4 && k >= 0.99) return 'night';
-  return k >= 0.6 ? 'sunset' : 'day';
-}
-
 export interface DayPlan {
   day: number;
   goal: number;
-  orders: LevelDef[];
+  /** Real seconds from opening to closing. */
+  length: number;
+  shoppers: number;
 }
 
-export function planDay(day: number, career: Career, notes: string[] = ['']): DayPlan {
-  const n = ordersInDay(day);
-  const rand = rng(day * 7919 + 17);
-  const expressAt = day >= 3 ? 1 + Math.floor(rand() * (n - 1)) : -1;
-  const orders: LevelDef[] = [];
-  for (let i = 0; i < n; i++) orders.push(makeOrder(day, i, n, i === expressAt, career, rand, notes));
-  return { day, goal: dayGoal(day), orders };
+export function planDay(day: number): DayPlan {
+  return { day, goal: dayGoal(day), length: dayLength(day), shoppers: Math.min(14, 4 + day) };
 }
 
-function makeOrder(day: number, index: number, total: number, express: boolean, career: Career, rand: () => number, notes: string[]): LevelDef {
+/**
+ * The index-th order of a day. Deterministic per (day, index), so a retried
+ * day brings the same orders. Later orders in a day are a little bigger.
+ */
+export function makeOrder(day: number, index: number, career: Career, notes: string[] = ['']): LevelDef {
+  const rand = rng(day * 7919 + index * 104729 + 17);
+  const express = day >= 3 && index > 0 && rand() < 0.22;
   const rules = rulesForDay(day);
   const capacity = 4 + upgradeLevel(career, 'bags');
-  const items = Math.min(10, 2 + Math.ceil(day * 0.7) + Math.floor(index / 2));
+  const items = Math.min(10, 2 + Math.ceil(day * 0.6) + Math.floor(index / 2));
   const pool = stockedProducts();
   const pickFrom = (list: ProductDef[]) => list[Math.floor(rand() * list.length)];
   let lines: { productId: string; qty: number }[] = [];
@@ -220,10 +218,12 @@ function makeOrder(day: number, index: number, total: number, express: boolean, 
   }
   bagCount = Math.min(3, bagCount);
   const itemCount = lines.reduce((a, l) => a + l.qty, 0);
-  let time = 60 + itemCount * 20 + (day === 1 ? 40 : 0) + upgradeLevel(career, 'overtime') * 15;
+  // seconds per item shrink slowly as the days go by
+  const perItem = Math.max(14, 20 - (day - 1) * 0.6);
+  let time = 55 + itemCount * perItem + (day === 1 ? 40 : 0) + upgradeLevel(career, 'overtime') * 15;
   if (express) time *= 0.72;
   const order: OrderDef = {
-    id: `#${1000 + day * 10 + index}`,
+    id: `#${1000 + day * 20 + index}`,
     customer: CUSTOMERS[Math.floor(rand() * CUSTOMERS.length)],
     address: `${1 + Math.floor(rand() * 98)} ${STREETS[Math.floor(rand() * STREETS.length)]}`,
     note: notes[Math.floor(rand() * notes.length)],
@@ -236,17 +236,7 @@ function makeOrder(day: number, index: number, total: number, express: boolean, 
     rules,
     lines,
   };
-  const mood = moodFor(index, total);
-  return {
-    day,
-    index,
-    total,
-    mood,
-    express,
-    tutorial: day === 1 && index === 0,
-    shoppers: Math.round(Math.min(14, 4 + day) * (mood === 'night' ? 0.6 : 1)),
-    order,
-  };
+  return { day, index, express, tutorial: day === 1 && index === 0, order };
 }
 
 // ---------------------------------------------------------------- scoring

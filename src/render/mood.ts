@@ -160,40 +160,82 @@ export class Lighting {
     return tex;
   }
 
-  async apply(id: MoodId, store: StoreView, outside: OutsideView, post: Post) {
-    const m = MOODS[id];
-    this.mood = m;
-    try {
-      const sky = await this.loadSky(m);
-      this.scene.background = sky;
-      this.scene.backgroundIntensity = m.skyIntensity;
-    } catch {
-      this.scene.background = new THREE.Color(m.fog);
-    }
-    this.scene.environmentIntensity = m.envIntensity;
-    this.scene.fog = new THREE.Fog(m.fog, 60, 160);
-    this.hemi.color.set(m.hemi[0]);
-    this.hemi.groundColor.set(m.hemi[1]);
-    this.hemi.intensity = m.hemi[2];
-    this.ambient.intensity = m.ambient;
-    this.sun.color.set(m.sun.color);
-    this.sun.intensity = m.sun.intensity;
-    this.sun.position.set(...m.sun.pos);
-    this.sun.target.position.set(0, 0, 4);
-    for (const f of store.fixtureMaterials) {
-      f.emissive.set(m.fixtureColor);
-      f.emissiveIntensity = m.fixtures;
-    }
-    for (const g of store.glowMaterials) g.opacity = m.pools;
-    for (const p of this.points) {
-      p.color.set(m.points.color);
-      p.intensity = m.points.intensity;
-    }
-    for (const p of this.streetPoints) p.intensity = m.streetLamps * 6;
-    for (const l of outside.streetLampMaterials) l.emissiveIntensity = m.streetLamps;
-    outside.setDaylight(m.daylight);
-    for (const n of store.neonMaterials) n.emissiveIntensity = id === 'night' ? 4 : 2;
-    this.renderer.toneMappingExposure = m.exposure;
-    post.setGrade(m.grade);
+  /** Loads every sky up front so the time of day can change without stalls. */
+  async preloadSkies() {
+    await Promise.all(Object.values(MOODS).map((m) => this.loadSky(m).catch(() => null)));
   }
+
+  /** A fixed mood (settings override, menus). */
+  async apply(id: MoodId, store: StoreView, outside: OutsideView, post: Post) {
+    await this.loadSky(MOODS[id]).catch(() => null);
+    this.mix(MOODS[id], MOODS[id], 0, store, outside, post);
+  }
+
+  /**
+   * Time of day over a work day: k = 0 at opening, 1 at closing.
+   * Day until mid-afternoon, a slow golden-hour blend, then dusk into night.
+   */
+  setTimeOfDay(k: number, store: StoreView, outside: OutsideView, post: Post) {
+    const { day, sunset, night } = MOODS;
+    const ease = (x: number) => x * x * (3 - 2 * x);
+    if (k < 0.45) this.mix(day, day, 0, store, outside, post);
+    else if (k < 0.68) this.mix(day, sunset, ease((k - 0.45) / 0.23), store, outside, post);
+    else if (k < 0.8) this.mix(sunset, sunset, 0, store, outside, post);
+    else this.mix(sunset, night, ease(Math.min(1, (k - 0.8) / 0.2)), store, outside, post);
+  }
+
+  private fog = new THREE.Fog('#ffffff', 60, 160);
+
+  /** Blends two moods (t = 0 → a, 1 → b). */
+  mix(a: MoodDef, b: MoodDef, t: number, store: StoreView, outside: OutsideView, post: Post) {
+    const n = (x: number, y: number) => x + (y - x) * t;
+    const c = (x: string, y: string) => this.tmpA.set(x).lerp(this.tmpB.set(y), t);
+    this.mood = t < 0.5 ? a : b;
+    // skies can't cross-fade: swap at the midpoint while the sky is dimmed
+    const sky = this.hdrCache.get((t < 0.5 ? a : b).hdr);
+    const dip = a === b ? 1 : 0.35 + 0.65 * Math.abs(t - 0.5) * 2;
+    if (sky) {
+      this.scene.background = sky;
+      this.scene.backgroundIntensity = n(a.skyIntensity, b.skyIntensity) * dip;
+    } else this.scene.background = c(a.fog, b.fog).clone();
+    this.scene.environmentIntensity = n(a.envIntensity, b.envIntensity);
+    this.fog.color.copy(c(a.fog, b.fog));
+    this.scene.fog = this.fog;
+    this.hemi.color.copy(c(a.hemi[0], b.hemi[0]));
+    this.hemi.groundColor.copy(c(a.hemi[1], b.hemi[1]));
+    this.hemi.intensity = n(a.hemi[2], b.hemi[2]);
+    this.ambient.intensity = n(a.ambient, b.ambient);
+    this.sun.color.copy(c(a.sun.color, b.sun.color));
+    this.sun.intensity = n(a.sun.intensity, b.sun.intensity);
+    this.sun.position.set(n(a.sun.pos[0], b.sun.pos[0]), n(a.sun.pos[1], b.sun.pos[1]), n(a.sun.pos[2], b.sun.pos[2]));
+    this.sun.target.position.set(0, 0, 4);
+    const fixture = c(a.fixtureColor, b.fixtureColor);
+    for (const f of store.fixtureMaterials) {
+      f.emissive.copy(fixture);
+      f.emissiveIntensity = n(a.fixtures, b.fixtures);
+    }
+    for (const g of store.glowMaterials) g.opacity = n(a.pools, b.pools);
+    const pc = c(a.points.color, b.points.color);
+    for (const p of this.points) {
+      p.color.copy(pc);
+      p.intensity = n(a.points.intensity, b.points.intensity);
+    }
+    for (const p of this.streetPoints) p.intensity = n(a.streetLamps, b.streetLamps) * 6;
+    for (const l of outside.streetLampMaterials) l.emissiveIntensity = n(a.streetLamps, b.streetLamps);
+    outside.setDaylight(n(a.daylight, b.daylight));
+    const neon = (m: MoodDef) => (m.id === 'night' ? 4 : 2);
+    for (const nm of store.neonMaterials) nm.emissiveIntensity = n(neon(a), neon(b));
+    this.renderer.toneMappingExposure = n(a.exposure, b.exposure);
+    post.setGrade({
+      vignette: n(a.grade.vignette, b.grade.vignette),
+      saturation: n(a.grade.saturation, b.grade.saturation),
+      contrast: n(a.grade.contrast, b.grade.contrast),
+      tint: `#${c(a.grade.tint, b.grade.tint).getHexString()}`,
+      bloom: n(a.grade.bloom, b.grade.bloom),
+      bloomThreshold: n(a.grade.bloomThreshold, b.grade.bloomThreshold),
+    });
+  }
+
+  private tmpA = new THREE.Color();
+  private tmpB = new THREE.Color();
 }

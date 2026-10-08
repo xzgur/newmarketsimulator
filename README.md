@@ -6,16 +6,19 @@ You're the newest picker at the Corner Market. Orders arrive on the **Order Dash
 
 ## Career
 
-The game is an endless series of **work days**:
+The game is an endless series of **work days**, and a day never stops for menus:
 
-- **Orders:** each day brings 3–6 generated orders. Every day is seeded, so retrying it brings the same orders.
-- **Daily goal:** deliver all but one of the day's orders. Hit it and the next, busier day unlocks. Miss it and you replay the day, but you keep your earnings.
-- **Review and pay:** after every order the customer leaves a 1–5 ★ review. You earn the order pay, plus a speed bonus and a tip that depend on how fast and clean you were. A timed-out order is cancelled, earns a 1 ★ review and pays nothing.
-- **Difficulty:**
-  - Orders grow from 3 to 10 items.
+- **The day clock:** the store opens at 08:00 and closes at 20:00 on the in-game clock. Day 1 lasts 5 real minutes, and each day adds 30 s, up to 8 minutes.
+- **Orders keep coming:** a few seconds after an order is delivered or cancelled, the phone rings with the next one. The world is never rebuilt between orders: shelves are restocked and you get a fresh cart for the new bags. Each order is seeded by (day, order number), so a retried day brings the same orders.
+- **Daily goal:** deliver 2 orders on day 1, rising slowly to 5 by day 13. At 20:00 the store closes: you finish the order in progress, then the day ends. Hit the goal and the next day unlocks. Miss it and you replay the day, but you keep your earnings.
+- **Review and pay:** every order ends with a 1–5 ★ customer review that pops up as a notification while you keep playing. You earn the order pay, plus a speed bonus and a tip that depend on how fast and clean you were. A timed-out order is cancelled, earns a 1 ★ review and pays nothing.
+- **Difficulty ramps gradually:**
+  - Orders grow from 3 to 10 items over the days, and orders later in a day are a little bigger.
+  - The time allowed per item shrinks from 20 s to 14 s.
   - Day 2 introduces the chemicals rule, and day 3 the eggs/heavy rule.
-  - From day 3, one order per day is ⚡ **Express**: less time, 1.5× pay, double tip.
-  - The time of day moves from day to sunset to night as the day goes on.
+  - From day 3, about one order in five is ⚡ **Express**: less time, 1.5× pay, double tip.
+  - More shoppers fill the aisles each day.
+- **Time of day:** the light blends smoothly from day through a golden-hour sunset to night as the clock runs. Skies swap while dimmed, so there's no visible jump.
 - **Long-term goal, the rank ladder:** every review star from a delivered order counts toward your rank: Trainee → Picker (12 ★) → Pro Picker (35 ★) → Shift Lead (70 ★) → Store Manager (120 ★) → Legend (200 ★). Each promotion pays a cash bonus and repaints your cart. Reaching Legend unlocks the **Golden Cart**.
 - **Upgrades** (bought with your cash):
 
@@ -33,7 +36,9 @@ The game is an endless series of **work days**:
 
 **When time runs low:** under 30 s the screen edges pulse red, the timer shakes and the music speeds up. In the last 10 s there's also a heartbeat.
 
-**Store PA:** opens the day, announces closing time on the last order, and plays regular in-store announcements.
+**Drift:** hold `Space` while moving and turn with the mouse. The cart keeps its momentum and slides, with a skid sound and sparks. Holding the slide charges a boost (blue, then orange). Let go to fire it. Bumping into something loses the charge.
+
+**Store PA:** a chime and announcements from the ceiling speakers. The store opens and closes with one, and there are regular in-store lines in between; the music dips while the PA talks. English, German and Spanish lines are pre-rendered with [Piper](https://github.com/rhasspy/piper) neural TTS and a baked-in megaphone effect (`scripts/build-announcements.py`). The voices are CC0 / public domain: Kathleen, Thorsten and carlfm. Turkish uses the browser's own Turkish voice when one is installed.
 
 ## Run
 
@@ -57,6 +62,7 @@ URL overrides: `?q=low|medium|high`, `?mood=day|sunset|night`.
 | `W` `A` `S` `D` | Push the cart / strafe |
 | Mouse | Look |
 | `Shift` | Hurry |
+| `Space` (hold) | Drift; release for a boost |
 | Left click | Pick a product / put it in the aimed bag / open a bag |
 | Right click | Put the item back |
 | `1` `2` `3` | Drop the held item into bag 1/2/3 |
@@ -107,4 +113,5 @@ scripts/playtest.mjs Playwright end-to-end playtest
 - HDR skies: [Poly Haven](https://polyhaven.com/) (CC0).
 - Fonts: Baloo 2 and Nunito (SIL Open Font License, see `public/fonts/`).
 - Store music and the Order Dash logo were supplied by the project owner.
-- Sound effects are synthesized at runtime with WebAudio. Announcements use the browser's speech synthesis.
+- Sound effects are synthesized at runtime with WebAudio.
+- PA announcements: generated with Piper TTS using CC0 / public-domain voices (en-us-kathleen-low, de-thorsten-low, es-carlfm-x-low). Turkish falls back to the browser's speech synthesis.

@@ -16,7 +16,6 @@ const ACTION_KEYS: Record<string, Action> = {
   Digit2: 'bag2',
   Digit3: 'bag3',
   Enter: 'accept',
-  Space: 'accept',
 };
 
 const GAME_KEYS = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'Tab', 'ShiftLeft', 'ShiftRight']);
@@ -100,14 +99,14 @@ export class Input {
     return this.down.has(code);
   }
 
-  move(): { forward: number; strafe: number; turn: number; sprint: boolean } {
+  move(): { forward: number; strafe: number; turn: number; sprint: boolean; drift: boolean } {
     const f = this.isDown('KeyW') || this.isDown('ArrowUp') ? 1 : 0;
     const b = this.isDown('KeyS') || this.isDown('ArrowDown') ? 1 : 0;
     const l = this.isDown('KeyA') ? 1 : 0;
     const r = this.isDown('KeyD') ? 1 : 0;
     const tl = this.isDown('ArrowLeft') ? 1 : 0;
     const tr = this.isDown('ArrowRight') ? 1 : 0;
-    return { forward: f - b, strafe: r - l, turn: tl - tr, sprint: this.isDown('ShiftLeft') || this.isDown('ShiftRight') };
+    return { forward: f - b, strafe: r - l, turn: tl - tr, sprint: this.isDown('ShiftLeft') || this.isDown('ShiftRight'), drift: this.isDown('Space') };
   }
 
   /** Mouse delta since last call, in radians (yaw, pitch). */

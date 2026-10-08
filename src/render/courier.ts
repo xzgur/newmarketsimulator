@@ -141,6 +141,11 @@ export class CourierView {
   }
 
   arrive(onArrive: () => void) {
+    // a new order can be ready while the previous rider is still leaving
+    for (const b of this.carried) b.removeFromParent();
+    this.carried = [];
+    this.pending = null;
+    this.onGone = undefined;
     this.onArrive = onArrive;
     this.group.visible = true;
     this.state = 'ridingIn';
@@ -221,6 +226,15 @@ export class CourierView {
     };
   }
   private receiveAnim?: (t: number) => void;
+
+  /** Order cancelled: the courier gives up and leaves. */
+  cancel() {
+    if (this.state === 'ridingIn') {
+      this.state = 'gone';
+      this.engineLevel = 0;
+      this.group.visible = false;
+    } else if (this.state === 'walkingIn' || this.state === 'waiting') this.leave(() => undefined);
+  }
 
   leave(onGone: () => void) {
     this.onGone = onGone;

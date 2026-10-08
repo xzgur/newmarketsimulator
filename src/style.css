@@ -942,8 +942,8 @@ input[type='range']::-moz-range-thumb {
 
 .pa {
   position: absolute;
-  top: 18px;
-  right: 18px;
+  top: 72px;
+  left: 16px;
   display: flex;
   gap: 8px;
   align-items: center;
@@ -2410,4 +2410,226 @@ input[type='range']::-moz-range-thumb {
   .menu-side {
     display: none;
   }
+}
+
+/* ================================================================ continuous day */
+/* the phone keeps one size: no jumping between the list, the courier map and the receipts */
+.phone,
+.phone.open {
+  width: 300px;
+}
+
+.phone.open .phone-screen {
+  display: flex;
+  flex-direction: column;
+  height: min(480px, calc(100vh - 150px));
+}
+
+.phone.open .phone-screen > .delivered,
+.phone.open .phone-screen > .incoming,
+.phone.open .phone-screen > .waiting {
+  flex: 1;
+  justify-content: center;
+}
+
+.phone.open .phone-screen > .incoming {
+  justify-content: flex-start;
+}
+
+.phone .radar-ping {
+  display: grid;
+  place-items: center;
+  width: 76px;
+  height: 76px;
+  border-radius: 50%;
+  background: var(--app-gray);
+  font-size: 34px;
+  animation: ping 1.4s ease-out infinite;
+}
+
+@keyframes ping {
+  0% {
+    box-shadow: 0 0 0 0 rgba(6, 193, 103, 0.5);
+  }
+  100% {
+    box-shadow: 0 0 0 22px rgba(6, 193, 103, 0);
+  }
+}
+
+.review-toasts {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  display: grid;
+  gap: 8px;
+  width: min(340px, 40vw);
+}
+
+.review-toast {
+  padding: 10px 14px;
+  border: var(--line);
+  border-radius: 18px;
+  background: var(--paper);
+  box-shadow: var(--pop);
+  animation: slideIn 0.35s cubic-bezier(0.3, 1.4, 0.5, 1);
+  transition: opacity 0.4s, transform 0.4s;
+}
+
+.review-toast.out {
+  opacity: 0;
+  transform: translateX(30px);
+}
+
+.review-toast.bad {
+  background: #ffe4df;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateX(60px);
+  }
+}
+
+.rt-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.rt-head .avatar {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: var(--line);
+  border-radius: 50%;
+  background: var(--cream);
+  font-size: 18px;
+}
+
+.rt-head b {
+  display: block;
+  font: 800 16px/1.1 var(--display);
+}
+
+.rt-head small {
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--ink-2);
+}
+
+.rt-head .stars5 {
+  font-size: 18px;
+}
+
+.review-toast p {
+  margin: 6px 0 4px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.rt-pay {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--ink-2);
+}
+
+.rt-pay b {
+  font: 800 20px var(--display);
+  color: #2f9e3a;
+}
+
+.dp-clock {
+  font-variant-numeric: tabular-nums;
+}
+
+.dp-clock.closed {
+  color: var(--tomato);
+}
+
+.dp-goal.done {
+  color: #2f9e3a;
+}
+
+/* drift charge meter under the crosshair */
+.drift {
+  position: absolute;
+  left: 50%;
+  top: calc(50% + 34px);
+  transform: translateX(-50%);
+  display: grid;
+  justify-items: center;
+  gap: 3px;
+  pointer-events: none;
+}
+
+.drift span {
+  padding: 0 10px;
+  border-radius: 999px;
+  background: var(--glass);
+  color: #fff;
+  font: 800 13px var(--display);
+  letter-spacing: 1.5px;
+}
+
+.drift .dm {
+  width: 130px;
+  height: 10px;
+  border: 2.5px solid var(--ink);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.7);
+  overflow: hidden;
+}
+
+.drift .dm i {
+  display: block;
+  height: 100%;
+  background: #cfc6b3;
+  transition: width 0.08s linear;
+}
+
+.drift.lv1 .dm i {
+  background: var(--sky);
+}
+
+.drift.lv1 span {
+  background: var(--sky);
+}
+
+.drift.lv2 .dm i {
+  background: var(--orange);
+}
+
+.drift.lv2 span {
+  background: var(--orange);
+  animation: throbPill 0.25s infinite alternate;
+}
+
+.phone.open .lines {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-width: none;
+}
+
+.phone.open .courier-tip {
+  margin-top: auto;
+}
+
+.timer.off {
+  display: none;
+}
+
+.phone .day-progress {
+  margin-top: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--app-gray);
+  font-size: 13px;
+  font-weight: 700;
 }
