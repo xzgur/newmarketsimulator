@@ -88,9 +88,9 @@ scripts/playtest.mjs Playwright end-to-end playtest
 
 ## Gökçayır Footgolf (demo)
 
-A separate, self-contained demo lives in `public/gokcayir/index.html`: footgolf on toy islands. You kick a football into the cup in as few strokes as possible over three holes.
+A separate, self-contained demo lives in `public/gokcayir/index.html`: footgolf on floating island mesas, styled after *What the Golf?* (flat mint sky, teal tops, slate cliffs, stacked rounded trees, chunky orange lettering). Can, a bob-haired kid in a yellow number-10 kit, kicks a football into a big cup in as few strokes as possible over three holes.
 
-- Open it with `npm run dev` at `http://localhost:5173/gokcayir/`, or serve the `public/gokcayir/` folder with any static server. `#delik2` and `#delik3` jump straight to holes 2 and 3.
+- Open it with `npm run dev` at `http://localhost:5173/gokcayir/`, or serve the `public/gokcayir/` folder with any static server. `#delik2` and `#delik3` jump straight to holes 2 and 3; `#pas` starts on the first green for putting practice.
 - Course surfaces (fairway, rough, sand, green, ponds, island edges) are signed-distance shapes that are shared between the physics and the terrain shader, so every edge you see is also the edge the ball feels.
 - Controls: drag sideways or ← → to aim, pull down and release (or hold Space) for power, the height slider or ↑ ↓ for loft, and the ball widget or Q E R F for spin. Press M for the course map.
 - Everything in the scene (the player, props, ball and cup) is built procedurally in the page, so it needs no model files.
