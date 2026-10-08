@@ -5,3 +5,6 @@ dist
 playtest-output
 vendor
 /*.png
+dist-crazygames
+*.zip
+videos/

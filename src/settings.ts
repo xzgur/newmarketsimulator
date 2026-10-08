@@ -1,7 +1,8 @@
-/** Player settings + career save, persisted in localStorage (best effort). */
+/** Player settings + career save: CrazyGames cloud save when available, localStorage otherwise. */
 import type { Lang } from './i18n';
 import type { MoodId } from './render/moodIds';
 import { newCareer, type Career } from './logic/career';
+import { storage } from './platform';
 
 export type Quality = 'low' | 'medium' | 'high';
 
@@ -41,20 +42,17 @@ export const DEFAULT_SETTINGS: Settings = {
 const KEY = 'orderdash.settings.v1';
 
 function read<T>(key: string): T | null {
+  const raw = storage.get(key);
+  if (!raw) return null;
   try {
-    const raw = localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : null;
+    return JSON.parse(raw) as T;
   } catch {
     return null;
   }
 }
 
 function write(key: string, value: unknown) {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    /* storage unavailable: settings just won't persist */
-  }
+  storage.set(key, JSON.stringify(value));
 }
 
 export function loadSettings(): Settings {

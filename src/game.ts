@@ -22,6 +22,7 @@ import { Hud, esc, money, sectionLabel } from './ui/hud';
 import { Input } from './input';
 import { Sfx } from './audio';
 import { productName, setLang, t } from './i18n';
+import { happytime, loadingStop, midgameAd, onPlatformMute, setGameplay } from './platform';
 import { loadCareer, loadSettings, saveCareer, saveSettings, type Settings } from './settings';
 import {
   applyResult,
@@ -235,6 +236,8 @@ export class Game {
       this.hud.setLoading(1, 'menu.ready');
       this.ready = true;
       this.hud.showScreen('menu');
+      loadingStop();
+      onPlatformMute((m) => this.sfx.setExternalMute('platform', m));
       this.renderer.setAnimationLoop(() => this.frame());
     } catch (err) {
       console.error(err);
@@ -387,6 +390,7 @@ export class Game {
     this.wantLock = true;
     this.input.requestLock();
     this.input.clear();
+    setGameplay(true);
     // store PA opens the day
     this.paNext = 'pa.open';
     this.paTimer = 3;
@@ -429,8 +433,19 @@ export class Game {
   }
 
   /** "Next" on the end-of-day screen. */
+  private adBusy = false;
+
   private onNext() {
-    if (this.hud.currentScreen === 'dayEnd') this.startDay();
+    if (this.hud.currentScreen !== 'dayEnd' || this.adBusy) return;
+    // natural break between two days: the platform may show a midgame ad
+    this.adBusy = true;
+    void midgameAd((on) => {
+      this.sfx.setExternalMute('ad', on);
+      this.sfx.setMusic(!on);
+    }).then(() => {
+      this.adBusy = false;
+      this.startDay();
+    });
   }
 
   private endDay() {
@@ -447,7 +462,9 @@ export class Game {
     if (passed) {
       this.sfx.win();
       this.post.pulse('#FFD23F', 0.3);
+      happytime();
     } else this.sfx.lose();
+    setGameplay(false);
     this.flow = new GameFlow(0);
     this.hud.setPlaying(false);
     this.input.enabled = false;
@@ -471,6 +488,7 @@ export class Game {
   }
 
   private toMenu() {
+    setGameplay(false);
     this.sfx.ringStop();
     this.sfx.setEngine(0);
     this.sfx.setCartSpeed(0);
@@ -488,6 +506,7 @@ export class Game {
   private setPaused(p: boolean) {
     if (!this.inGame()) return;
     this.flow.paused = p;
+    setGameplay(!p);
     this.hud.showScreen(p ? 'pause' : null);
     this.input.enabled = !p;
     this.wantLock = !p;
@@ -728,6 +747,7 @@ export class Game {
     if (promoted) {
       this.paintCart();
       this.hud.promotion(promoted);
+      happytime();
       this.sfx.win();
       this.post.pulse('#FFD23F', 0.4);
     } else if (delivered && r.stars >= 4) this.sfx.combo(r.stars);

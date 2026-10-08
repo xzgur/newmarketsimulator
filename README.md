@@ -55,6 +55,38 @@ To use the shipped 3D assets, run `scripts/fetch-assets.sh` and then `node scrip
 
 URL overrides: `?q=low|medium|high`, `?mood=day|sunset|night`.
 
+## CrazyGames build
+
+```bash
+npm run build:crazygames   # → dist-crazygames/ + order-dash-crazygames.zip (upload this zip)
+```
+
+This build adds the [CrazyGames HTML5 SDK v3](https://docs.crazygames.com/) script tag. `src/platform.ts` wraps every SDK call, so the same code runs everywhere: without the SDK (normal web build, blocked script, environment `disabled`) each call is a no-op.
+
+| SDK feature | When |
+| --- | --- |
+| `SDK.init()` | Before the game boots (5 s timeout) |
+| `game.loadingStart()` / `loadingStop()` | Boot → main menu ready |
+| `game.gameplayStart()` / `gameplayStop()` | Start of a day / pause, end of day, back to menu |
+| `game.happytime()` | Promotions and a passed day |
+| `ad.requestAd('midgame')` | Between days (after "Start Day N"); audio is muted and the game waits until the ad ends |
+| `game.settings.muteAudio` | Platform mute switch, applied live |
+| `data.getItem` / `setItem` | Settings and career save (cloud save); falls back to `localStorage` off-platform |
+
+- **Size:** about 12 MB in 44 files. The limits are 50 MB initial download (20 MB for mobile) and 1,500 files.
+- **Paths:** all asset paths are relative (`base: './'`).
+- **Platform:** desktop only (keyboard + mouse, pointer lock).
+
+### Preview videos
+
+```bash
+npm run dev
+node scripts/record-videos.mjs all        # → videos/order-dash-landscape.mp4, videos/order-dash-portrait.mp4
+PREVIEW=1 node scripts/record-videos.mjs  # quick 1/3-size dry run
+```
+
+The videos are rendered deterministically, frame by frame, at 30 fps. They are silent H.264, landscape 1920×1080 (16:9) and portrait 1080×1620 (2:3), about 18 s long, matching CrazyGames' 15–20 s requirement.
+
 ## Controls
 
 | Input | Action |

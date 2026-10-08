@@ -31,6 +31,8 @@ export class Sfx {
   private engine: { osc: OscillatorNode; gain: GainNode } | null = null;
   private ringTimer: number | null = null;
   muted = false;
+  /** Mutes forced from outside the game (platform setting, ads). */
+  private external = new Set<string>();
   private vol = { music: 0.55, sfx: 0.8, muffle: 0.6 };
   announcements = true;
   private musicWanted = false;
@@ -134,7 +136,7 @@ export class Sfx {
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
     const m = this.vol.muffle;
-    this.master.gain.setTargetAtTime(this.muted ? 0 : 0.75, t, 0.05);
+    this.master.gain.setTargetAtTime(this.silent ? 0 : 0.75, t, 0.05);
     this.sfxBus.gain.setTargetAtTime(this.vol.sfx, t, 0.05);
     this.musicGain.gain.setTargetAtTime(this.vol.music * 0.42 * this.duck, t, 0.25);
     // m = 0: clean hi-fi; m = 1: tinny, far-away ceiling speakers
@@ -148,6 +150,16 @@ export class Sfx {
     this.dry.gain.setTargetAtTime(1 - m * 0.55, t, 0.05);
     this.far.gain.setTargetAtTime(m * 0.7, t, 0.05);
     this.wet.gain.setTargetAtTime(0.03 + m * 0.6, t, 0.05);
+  }
+
+  private get silent(): boolean {
+    return this.muted || this.external.size > 0;
+  }
+
+  setExternalMute(key: string, on: boolean) {
+    if (on) this.external.add(key);
+    else this.external.delete(key);
+    this.apply();
   }
 
   setMuted(m: boolean) {
@@ -282,7 +294,7 @@ export class Sfx {
    * is one; otherwise the browser's speech synthesis (same language only).
    */
   announce(text: string, key?: string) {
-    if (!this.announcements || this.muted) return;
+    if (!this.announcements || this.silent) return;
     this.chime();
     const lang = getLang();
     if (key && this.ctx && PA_CLIP_LANGS.has(lang)) {
@@ -309,7 +321,7 @@ export class Sfx {
   }
 
   private playPa(buf: AudioBuffer) {
-    if (!this.ctx || this.muted) return;
+    if (!this.ctx || this.silent) return;
     const src = this.ctx.createBufferSource();
     src.buffer = buf;
     const g = this.ctx.createGain();
