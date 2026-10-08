@@ -69,7 +69,7 @@ async function record(name, size) {
       }
     }, 1 / FPS);
     await page.clock.runFor(Math.round(1000 / FPS));
-    await page.screenshot({ path: join(frames, `${String(n++).padStart(4, '0')}.jpg`), type: 'jpeg', quality: 93 });
+    await page.screenshot({ path: join(frames, `${String(n++).padStart(4, '0')}.jpg`), type: 'jpeg', quality: 93, timeout: 0 });
   };
   const frames$ = async (count, each) => {
     for (let i = 0; i < count; i++) {
