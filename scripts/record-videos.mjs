@@ -7,6 +7,7 @@
  *   npm run dev
  *   node scripts/record-videos.mjs [landscape|portrait|all] [url]
  *   PREVIEW=1 node scripts/record-videos.mjs …   # quick 1/3-size dry run to check the shots
+ *   RESUME=345 node scripts/record-videos.mjs landscape   # replay deterministically, capture from frame 345 on
  *
  * Output: videos/order-dash-landscape.mp4 (1920x1080, 16:9)
  *         videos/order-dash-portrait.mp4  (1080x1620, 2:3)
@@ -28,6 +29,7 @@ const which = process.argv[2] ?? 'all';
 const url = process.argv[3] ?? 'http://localhost:5173/?q=high';
 const FPS = 30;
 const PREVIEW = !!process.env.PREVIEW;
+const RESUME = Number(process.env.RESUME ?? 0);
 const scale = PREVIEW ? 1 / 3 : 1;
 const FORMATS = {
   landscape: { width: Math.round(1920 * scale), height: Math.round(1080 * scale) },
@@ -37,7 +39,7 @@ const FORMATS = {
 async function record(name, size) {
   const tag = PREVIEW ? `${name}-preview` : name;
   const frames = join('videos', `frames-${tag}`);
-  rmSync(frames, { recursive: true, force: true });
+  if (!RESUME) rmSync(frames, { recursive: true, force: true });
   mkdirSync(frames, { recursive: true });
   const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--in-process-gpu'] });
   const page = await browser.newPage({ viewport: size });
@@ -69,6 +71,10 @@ async function record(name, size) {
       }
     }, 1 / FPS);
     await page.clock.runFor(Math.round(1000 / FPS));
+    if (n < RESUME) {
+      n++;
+      return;
+    }
     await page.screenshot({ path: join(frames, `${String(n++).padStart(4, '0')}.jpg`), type: 'jpeg', quality: 93, timeout: 0 });
   };
   const frames$ = async (count, each) => {
